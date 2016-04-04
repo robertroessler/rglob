@@ -6,6 +6,14 @@ using namespace rglob;
 
 static void validate(string p, string t, bool x = true, bool pp = false);
 
+/*
+	Both the main and validate functions below illustrate some sample patterns
+	and targets, as well as providing a useful framework for simple testing.
+
+	N.B. - it should be emphasized that "globs" are NOT "regexps", and in
+	particular, a single character class, no matter how complex, will match AT
+	MOST a SINGLE [UTF-8] character / "code point" from the target string.
+*/
 int main(int argc, char* argv[])
 {
 	// validate the simplest patterns...
@@ -41,6 +49,16 @@ int main(int argc, char* argv[])
 	validate "wraps" pattern compiling, optional pretty-printing, and matching,
 	displaying a [generally] single-line/test formatted report, while catching
 	and reporting any of the exceptions thrown by rglob.
+
+	Usage
+	=====
+	p	pattern to compile and match against
+	t	target text for matching
+	x	expected result of match (true -> MATCH, false -> FAIL!)
+	pp	pretty_print the compiled version of this pattern
+
+	N.B. - whether or not the handy "u8" from of string literals is used, both
+	the pattern and target will be interpreted as containing Unicode in UTF-8!
 */
 static void validate(string p, string t, bool x, bool pp)
 {
