@@ -12,7 +12,9 @@ static void validate(string p, string t, bool x = true, bool pp = false);
 
 	N.B. - it should be emphasized that "globs" are NOT "regexps", and in
 	particular, a single character class, no matter how complex, will match AT
-	MOST a SINGLE [UTF-8] character / "code point" from the target string.
+	MOST a SINGLE [UTF-8] character / "code point" from the target string - no
+	number of '+' or '*' chars after the closing ']' will change this, because
+	well, "glob" patterns really AREN'T regular expressions (like we said).
 */
 int main(int argc, char* argv[])
 {
