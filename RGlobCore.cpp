@@ -49,6 +49,8 @@ void compiler::compile(const std::string& pattern)
 	if (!validateUTF8String(pattern.c_str()))
 		throw invalid_argument("Pattern string is not valid UTF-8.");
 	fsm.clear();
+	// prep for filling in compiled length of pattern later
+	emit('#'), emitPadding(2);
 	ptrdiff_t incr = 1;
 	// iterate over, compile, and consume pattern elements
 	for (auto pi = pattern.cbegin(); pi != pattern.cend(); pi += incr) {
@@ -68,6 +70,12 @@ void compiler::compile(const std::string& pattern)
 		if (emitted() > AllowedMaxFSM)
 			throw length_error(string("Exceeded allowed compiled pattern size @ ") + &*pi);
 	}
+	// NOW fill in length of compiled pattern... IFF there is any actual pattern
+	auto const n = emitted();
+	if (n > 1 + LengthSize)
+		emitLengthAt(1, n - (1 + LengthSize));
+	else
+		fsm.clear();
 }
 
 /*
@@ -86,6 +94,10 @@ bool matcher::match(const std::string& target) const
 	// recognized (matched) elements of the target text
 	for (auto first = cbegin(), mi = first, last = cend(); mi != last;)
 		switch (*mi++) {
+		case '#':
+			// "no-op" from the perspective of matching
+			mi += LengthSize;
+			break;
 		case '?':
 			// accept ("match") single target code point
 			anchored = true, ++ti;
@@ -199,6 +211,11 @@ void matcher::pretty_print(std::ostream& s) const
 		const auto op = *mi++;
 		s << "off:" << setw(4) << (mi - first - 1) << " op: " << (char)op;
 		switch (op) {
+		case '#':
+			// display length of compiled pattern
+			s << " len: " << decodeLengthAt(mi);
+			mi += LengthSize;
+			break;
 		case '[':
 			// display control metadata from "interpreted" character class
 			s << " mod: " << decodeModifierAt(mi) << " len: " << decodeLengthAt(mi + 1);
