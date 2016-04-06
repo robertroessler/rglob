@@ -456,7 +456,7 @@ private:
 			return base64vals[c & 0x7f];
 	}
 	const utf8iteratorBare cbegin() const { return fsm; }
-	const utf8iteratorBare cend() const { return fsm + strlen(fsm); }
+	const utf8iteratorBare cend() const { return fsm + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm + 1) : strlen(fsm)); }
 	int decodeLengthAt(utf8iteratorBare i) const { return base64Value(opAt(i + 0)) * 64 + base64Value(opAt(i + 1)); }
 	int decodeModifierAt(utf8iteratorBare i) const { return hexValue(opAt(i)); }
 	int packedBitsetMask(int b) const { return "\x8\4\2\1"[(127 - b) & 0b11]; }
