@@ -180,7 +180,7 @@ bool matcher::match(const std::string& target) const
 			// (below means "not found" OR "found, but not where expected")
 			if (i == string::npos || (anchored && i != o))
 				return false;
-			ti = anchored ? ti + n : target.cbegin() + i + n, anchored = true, mi += LengthSize + n;
+			ti = anchored ? ti + n : utf8iterator(target.cbegin() + i + n), anchored = true, mi += LengthSize + n;
 			break;
 		}
 		}
