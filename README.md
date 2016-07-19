@@ -36,3 +36,5 @@ Things that most likely should NOT happen include
 * any attempt to "extend" rglob so that it supports a more powerful "pattern
 language" - globs are globs, and if your needs are for something more like real
 regular expressions... then use real regular expressions
+
+[![Build status](https://ci.appveyor.com/api/projects/status/github/robertroessler/rglob?svg=true)](https://ci.appveyor.com/project/robertroessler/rglob)
