@@ -1,5 +1,7 @@
-RGlob
-=====
+# RGlob
+
+[![Build status](https://ci.appveyor.com/api/projects/status/github/robertroessler/rglob?svg=true)](https://ci.appveyor.com/project/robertroessler/rglob)
+
 The RGlob (rglob) project provides a simple pattern-matcher supporting patterns
 constructed in the familiar "glob" style - but separated from any of the file or
 folder matching operations - JUST the patterns.
@@ -16,8 +18,8 @@ in the rglob.h header file.
 Besides being "pure" C++, the code is believed to be both 32/64 -bit "safe", and
 to contain no dependencies (overtly or lurking) on Windows.
 
-ToDo
-====
+## ToDo
+
 Possible items to work on - for myself or collaborators include
 
 * additonal (and properly laid out) test cases, both to serve as actual tests
@@ -29,12 +31,10 @@ space savings in more complex/repetitive patterns
 * as only Visual Studio 2015 project and solution files are initially present,
 control files for building in non-Windows environments could be useful
 
-ProbablyNot
-===========
+## ProbablyNot
+
 Things that most likely should NOT happen include
 
 * any attempt to "extend" rglob so that it supports a more powerful "pattern
 language" - globs are globs, and if your needs are for something more like real
 regular expressions... then use real regular expressions
-
-[![Build status](https://ci.appveyor.com/api/projects/status/github/robertroessler/rglob?svg=true)](https://ci.appveyor.com/project/robertroessler/rglob)
