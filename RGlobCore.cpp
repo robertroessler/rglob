@@ -1,7 +1,7 @@
 /*
 	RGlobCore.cpp - "core" functionality of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016, Robert Roessler
+	Copyright(c) 2016,2019, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -34,10 +34,154 @@
 #include <iomanip>
 #include "rglob.h"
 
-using namespace std;
+using std::string;
 using namespace rglob;
 
-static bool validateUTF8String(const char* s);
+/*
+	validateUTF8String evaluates the [NUL-terminated] sequence of chars supplied
+	for "valid" UTF-8 encoding - structurally, NOT in terms of specific values
+	of code points / combinations.
+
+	Returns the result of this evaluation.
+
+	N.B. - a "false" return should probably NOT be ignored.
+*/
+constexpr auto validateUTF8String(const char* s)
+{
+	while (*s)
+		switch (auto n = sizeOfUTF8CodePoint(*s++); n) {
+		case 0:
+			// invalid "lead char" of UTF-8 Unicode sequence
+			return false;
+		case 1:
+			// ASCII char
+			break;
+		default:
+			// multi-byte UTF-8 Unicode sequence...
+			for (auto c = *s; --n; c = *s++)
+				if ((c & 0b11000000) != 0b10000000)
+					// invalid "following char" of UTF-8 Unicode sequence
+					return false;
+		}
+	return true;
+}
+
+/*
+	compileClass processes a single "character class" string from a glob pattern
+	- after first determining whether the sequence is well-formed - an exception
+	(invalid_argument) will be thrown if it fails this test.
+
+	While evaluating the legality of the character class, two "special cases" of
+	leading character class metachars are checked, and then the presence of non-
+	ASCII is tested... if none are found, then the entire class will be handled
+	by "fast path" logic, and represented as a "bitset" - in which case, class
+	membership (matching) can be tested by a single "lookup" per target char.
+
+	In the general [non-ASCII] case, the match-time evaluation of matches in the
+	character class will be done by evaluating a number of either single-char or
+	char-range expressions serially... if at least one matches the "target"/test
+	char, then the class is matched - otherwise, the class match fails.
+
+	The number of chars/BYTEs consumed is returned.
+*/
+auto compiler::compileClass(const std::string& pattern, std::string::const_iterator p)
+{
+	const auto base = p++;
+	const auto pos = emitted();
+	// check for "inversion" of character class metacharacter
+	auto invert = false;
+	if (*p == '!' || *p == '^')
+		invert = true, ++p;
+	// NOW check for "close" metacharacter as the first class member
+	auto leadingCloseBracket = false;
+	// NOW look for the end of the character class specification...
+	if (*p == ']')
+		leadingCloseBracket = true, ++p;
+	const auto o = p - pattern.cbegin();
+	const auto close = pattern.find_first_of(']', o);
+	// ... and throw if we don't see one
+	if (close == string::npos)
+		throw std::invalid_argument(string("Missing terminating ']' for character class @ ") + &*base);
+	if (all_of(p, p + (close - o), [](char c) { return isascii(c); })) {
+		// the character class is ALL ASCII chars, so we can use the "fast path"
+		emit('{');
+		// (neither "invert" flag nor "length" field are needed for "fast path")
+		std::bitset<128> b;
+		// "fast path" (bitset) invert is easy
+		if (invert)
+			b.set();
+		if (leadingCloseBracket)
+			b.flip(']');
+		// process all class members by "flipping" corresponding bits...
+		while (*p != ']') {
+			const auto c1 = *p++, c2 = *p;
+			if (c2 == '-' && peek(p) != ']') {
+				const auto c3 = *++p;
+				for (auto c = c1; c <= c3; c++)
+					b.flip(c);
+				++p;
+			}
+			else
+				b.flip(c1);
+		}
+		// ... finish up by copying the [packed] bitset to finite state machine
+		emitPackedBitset(b), ++p;
+		return p - base;
+	}
+	else {
+		// "general case" character class, output single and range match exprs
+		emit('[');
+		emit(hexDigit(invert ? 1 : 0));
+		// initialize and "remember" location of length (to be filled in later)
+		const auto lenPos = emitted();
+		emitPadding(LengthSize);
+		if (leadingCloseBracket)
+			emit('+'), emit(']');
+		// NOW switch to full UTF-8 (Unicode) processing...
+		utf8iterator u = p;
+		// ... and process all class members by outputting match-time operators
+		while (*u != ']') {
+			const auto c1 = *u++;
+			const auto c2 = *u;
+			if (c2 == '-' && peek(u) != ']') {
+				// (generate "char range" matching operator)
+				const auto c3 = *++u;
+				emit('-'), emitUTF8CodePoint(c1), emitUTF8CodePoint(c3), ++u;
+			}
+			else
+				// (generate "single char" matching operator)
+				emit('+'), emitUTF8CodePoint(c1);
+		}
+		// finish up by generating the "NO match" operator...
+		emit(']'), ++u;
+		// ... and output the length of the character class "interpreter" logic
+		emitLengthAt(lenPos, emitted() - pos - (1 + 1 + LengthSize + 1));
+		return u - base;
+	}
+}
+
+/*
+	compileString processes a single "exact match" string from a glob pattern...
+	this will extend until either the next glob metacharacter or the pattern end
+	- there is no "invalid" case.
+
+	The number of chars/BYTEs consumed is returned.
+*/
+auto compiler::compileString(const std::string& pattern, std::string::const_iterator p)
+{
+	emit('=');
+	// initialize and "remember" location of length (to be filled in later)
+	const auto lenPos = emitted();
+	emitPadding(LengthSize);
+	// determine length...
+	const auto o = p - pattern.cbegin();
+	const auto i = pattern.find_first_of("?*[", o);
+	const auto n = i != string::npos ? i - o : pattern.size() - o;
+	// ... and copy "exact match" string to finite state machine
+	emit(p, p + n);
+	emitLengthAt(lenPos, n);
+	return n;
+}
 
 /*
 	compile generates a "finite state machine" able to recognize text matching
@@ -47,7 +191,7 @@ void compiler::compile(const std::string& pattern)
 {
 	// make SURE pattern is *structurally* valid UTF8
 	if (!validateUTF8String(pattern.c_str()))
-		throw invalid_argument("Pattern string is not valid UTF-8.");
+		throw std::invalid_argument("Pattern string is not valid UTF-8.");
 	fsm.clear();
 	// prep for filling in compiled length of pattern later
 	emit('#'), emitPadding(2);
@@ -68,7 +212,7 @@ void compiler::compile(const std::string& pattern)
 			incr = compileString(pattern, pi);
 		}
 		if (emitted() > AllowedMaxFSM)
-			throw length_error(string("Exceeded allowed compiled pattern size @ ") + &*pi);
+			throw std::length_error(string("Exceeded allowed compiled pattern size @ ") + &*pi);
 	}
 	// NOW fill in length of compiled pattern... IFF there is any actual pattern
 	auto const n = emitted();
@@ -86,9 +230,9 @@ bool matcher::match(const std::string& target) const
 {
 	// make SURE target is *structurally* valid UTF8
 	if (!validateUTF8String(target.c_str()))
-		throw invalid_argument("Target string is not valid UTF-8.");
-	bool anchored = true, invert = false;
-	utf8iteratorBare next;
+		throw std::invalid_argument("Target string is not valid UTF-8.");
+	auto anchored = true, invert = false;
+	utf8iteratorBare next(nullptr);
 	utf8iterator ti = target.cbegin();
 	// iterate over the previously compiled pattern representation, consuming
 	// recognized (matched) elements of the target text
@@ -198,18 +342,18 @@ void matcher::pretty_print(std::ostream& s) const
 	// (local fn to compute width for Unicode representation)
 	auto w = [](char32_t c) { return c < 0x010000 ? 4 : c < 0x100000 ? 5 : 6; };
 	// (local fn to show Unicode char as ASCII if we can, else use "U+..." form)
-	auto a = [&](char32_t c)->ostream& {
+	auto a = [&](char32_t c)->std::ostream& {
 		return
 			isascii(c) ?
 				s << (char)c :
-				s << "U+" << hex << uppercase << setfill('0') << setw(w(c))
+				s << "U+" << std::hex << std::uppercase << std::setfill('0') << std::setw(w(c))
 				  << (int)c
-				  << dec << setfill(' ');
+				  << std::dec << std::setfill(' ');
 	};
 	// iterate over each element of finite state machine...
 	for (auto first = cbegin(), mi = first, last = cend(); mi != last;) {
 		const auto op = *mi++;
-		s << "off:" << setw(4) << (mi - first - 1) << " op: " << (char)op;
+		s << "off:" << std::setw(4) << (mi - first - 1) << " op: " << (char)op;
 		switch (op) {
 		case '#':
 			// display length of compiled pattern
@@ -224,7 +368,7 @@ void matcher::pretty_print(std::ostream& s) const
 		case '{':
 			// display bitset from "fast path" character class
 			s << " val: ";
-			copy((const char*)mi, (const char*)mi + 32, ostreambuf_iterator<char>(s));
+			std::copy((utf8iteratorBare::base_type)mi, (utf8iteratorBare::base_type)mi + 32, std::ostreambuf_iterator<char>(s));
 			mi += 32;
 			break;
 		case '+':
@@ -245,9 +389,8 @@ void matcher::pretty_print(std::ostream& s) const
 			// spaces, ALWAYS show [multi-byte] Unicode code points as " U+..."
 			// for each, and ALWAYS insert a space when switching between them.
 			enum LeadingSpace { None, Ascii, Unicode } state = None;
-			for_each(mi + LengthSize, mi + LengthSize + n, [&](char32_t c) {
-				const auto newState = isascii(c) ? Ascii : Unicode;
-				if (newState != state || state == Unicode)
+			std::for_each(mi + LengthSize, mi + LengthSize + n, [&](char32_t c) {
+				if (const auto newState = isascii(c) ? Ascii : Unicode; newState != state || state == Unicode)
 					s << ' ', state = newState;
 				a(c);
 			});
@@ -255,122 +398,8 @@ void matcher::pretty_print(std::ostream& s) const
 			break;
 		}
 		}
-		s << endl;
+		s << std::endl;
 	}
-}
-
-/*
-	compileClass processes a single "character class" string from a glob pattern
-	- after first determining whether the sequence is well-formed - an exception
-	(invalid_argument) will be thrown if it fails this test.
-
-	While evaluating the legality of the character class, two "special cases" of
-	leading character class metachars are checked, and then the presence of non-
-	ASCII is tested... if none are found, then the entire class will be handled
-	by "fast path" logic, and represented as a "bitset" - in which case, class
-	membership (matching) can be tested by a single "lookup" per target char.
-
-	In the general [non-ASCII] case, the match-time evaluation of matches in the
-	character class will be done by evaluating a number of either single-char or
-	char-range expressions serially... if at least one matches the "target"/test
-	char, then the class is matched - otherwise, the class match fails.
-
-	The number of chars/BYTEs consumed is returned.
-*/
-ptrdiff_t compiler::compileClass(const std::string& pattern, std::string::const_iterator p)
-{
-	const auto base = p++;
-	const auto pos = emitted();
-	// check for "inversion" of character class metacharacter
-	bool invert = false;
-	if (*p == '!' || *p == '^')
-		invert = true, ++p;
-	// NOW check for "close" metacharacter as the first class member
-	bool leadingCloseBracket = false;
-	// NOW look for the end of the character class specification...
-	if (*p == ']')
-		leadingCloseBracket = true, ++p;
-	const auto o = p - pattern.cbegin();
-	const auto close = pattern.find_first_of(']', o);
-	// ... and throw if we don't see one
-	if (close == string::npos)
-		throw invalid_argument(string("Missing terminating ']' for character class @ ") + &*base);
-	if (all_of(p, p + (close - o), [](char c) { return isascii(c); })) {
-		// the character class is ALL ASCII chars, so we can use the "fast path"
-		emit('{');
-		// (neither "invert" flag nor "length" field are needed for "fast path")
-		bitset<128> b;
-		// "fast path" (bitset) invert is easy
-		if (invert)
-			b.set();
-		if (leadingCloseBracket)
-			b.flip(']');
-		// process all class members by "flipping" corresponding bits...
-		while (*p != ']') {
-			const auto c1 = *p++, c2 = *p;
-			if (c2 == '-' && peek(p) != ']') {
-				const auto c3 = *++p;
-				for (auto c = c1; c <= c3; c++)
-					b.flip(c);
-				++p;
-			} else
-				b.flip(c1);
-		}
-		// ... finish up by copying the [packed] bitset to finite state machine
-		emitPackedBitset(b), ++p;
-		return p - base;
-	} else {
-		// "general case" character class, output single and range match exprs
-		emit('[');
-		emit(hexDigit(invert ? 1 : 0));
-		// initialize and "remember" location of length (to be filled in later)
-		const auto lenPos = emitted();
-		emitPadding(LengthSize);
-		if (leadingCloseBracket)
-			emit('+'), emit(']');
-		// NOW switch to full UTF-8 (Unicode) processing...
-		utf8iterator u = p;
-		// ... and process all class members by outputting match-time operators
-		while (*u != ']') {
-			const auto c1 = *u++;
-			const auto c2 = *u;
-			if (c2 == '-' && peek(u) != ']') {
-				// (generate "char range" matching operator)
-				const auto c3 = *++u;
-				emit('-'), emitUTF8CodePoint(c1), emitUTF8CodePoint(c3), ++u;
-			} else
-				// (generate "single char" matching operator)
-				emit('+'), emitUTF8CodePoint(c1);
-		}
-		// finish up by generating the "NO match" operator...
-		emit(']'), ++u;
-		// ... and output the length of the character class "interpreter" logic
-		emitLengthAt(lenPos, emitted() - pos - (1 + 1 + LengthSize + 1));
-		return u - base;
-	}
-}
-
-/*
-	compileString processes a single "exact match" string from a glob pattern...
-	this will extend until either the next glob metacharacter or the pattern end
-	- there is no "invalid" case.
-
-	The number of chars/BYTEs consumed is returned.
-*/
-ptrdiff_t compiler::compileString(const std::string& pattern, std::string::const_iterator p)
-{
-	emit('=');
-	// initialize and "remember" location of length (to be filled in later)
-	const auto lenPos = emitted();
-	emitPadding(LengthSize);
-	// determine length...
-	const auto o = p - pattern.cbegin();
-	const auto i = pattern.find_first_of("?*[", o);
-	const auto n = i != string::npos ? i - o : pattern.size() - o;
-	// ... and copy "exact match" string to finite state machine
-	emit(p, p + n);
-	emitLengthAt(lenPos, n);
-	return n;
 }
 
 /*
@@ -393,39 +422,8 @@ void compiler::emitPackedBitset(const std::bitset<128>& b)
 	// output the 128-bit bitset in a 4-bits-per-ASCII/hex-character format.
 	for (auto c = 128 - 4; c >= 0; c -= 4)
 		emit(hexDigit(
-			(b.test(c + 0) ? 1 : 0) |
-			(b.test(c + 1) ? 2 : 0) |
-			(b.test(c + 2) ? 4 : 0) |
-			(b.test(c + 3) ? 8 : 0)));
-}
-
-/*
-	validateUTF8String evaluates the [NUL-terminated] sequence of chars supplied
-	for "valid" UTF-8 encoding - structurally, NOT in terms of specific values
-	of code points / combinations.
-
-	Returns the result of this evaluation.
-
-	N.B. - a "false" return should probably NOT be ignored.
-*/
-static bool validateUTF8String(const char* s)
-{
-	while (*s) {
-		auto n = sizeOfUTF8CodePoint(*s++);
-		switch (n) {
-		case 0:
-			// invalid "lead char" of UTF-8 Unicode sequence
-			return false;
-		case 1:
-			// ASCII char
-			break;
-		default:
-			// multi-byte UTF-8 Unicode sequence...
-			for (char c = *s; --n; c = *s++)
-				if ((c & 0b11000000) != 0b10000000)
-					// invalid "following char" of UTF-8 Unicode sequence
-					return false;
-		}
-	}
-	return true;
+			(b.test((size_t)c + 0) ? 1 : 0) |
+			(b.test((size_t)c + 1) ? 2 : 0) |
+			(b.test((size_t)c + 2) ? 4 : 0) |
+			(b.test((size_t)c + 3) ? 8 : 0)));
 }

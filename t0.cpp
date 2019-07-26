@@ -64,7 +64,7 @@ int main(int argc, char* argv[])
 */
 static void validate(string p, string t, bool x, bool pp)
 {
-	auto mf = [](bool tf) { return tf ? "MATCH" : "FAIL!"; };
+	auto mf = [](auto tf) { return tf ? "MATCH" : "FAIL!"; };
 	glob g;
 	try {
 		g.compile(p);

@@ -1,7 +1,7 @@
 /*
 	rglob.h - interface of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016, Robert Roessler
+	Copyright(c) 2016,2019, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -48,9 +48,7 @@ namespace rglob {
 #define isascii(c) ((int)(c) < 128)
 #endif
 
-enum {
-	LengthSize = 2						// # of chars in [base64] encoded length
-};
+constexpr size_t LengthSize = 2;		// # of chars in [base64] encoded length
 
 /*
 	sizeOfUTF8CodePoint returns the length in bytes of a UTF-8 code point, based
@@ -69,9 +67,9 @@ enum {
 		(c & 0b11111000) == 0b11110000 ? 4 :
 		0; // (caller(s) should NOTICE this)
 */
-inline size_t sizeOfUTF8CodePoint(int c)
+constexpr size_t sizeOfUTF8CodePoint(char32_t c)
 {
-	const char* const utf8Lengths =
+	return
 		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 00-0f 1-byte UTF-8/ASCII
 		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 10-1f
 		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 20-2f
@@ -93,8 +91,8 @@ inline size_t sizeOfUTF8CodePoint(int c)
 
 		"\4\4\4\4\4\4\4\4"					// f0-f7 4-byte UTF-8
 
-		"\0\0\0\0\0\0\0\0";					// f8-ff <illegal>
-	return utf8Lengths[c & 0xff];
+		"\0\0\0\0\0\0\0\0"					// f8-ff <illegal>
+		[c & 0xff];
 }
 
 /*
@@ -160,7 +158,7 @@ template<class BaseType>
 class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag, char32_t>
 {
 	// provide [internal] short-hand access to our instantiated type
-	typedef basic_utf8iterator<BaseType> T;
+	using T = basic_utf8iterator<BaseType>;
 
 	BaseType base;						// our actual "base" iterator
 
@@ -171,7 +169,7 @@ class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag,
 	// itself - as well as "trusting" the bit patterns contained therein - it will
 	// ONLY work with well-formed UTF-8 encoded data!
 	value_type codePointFromUTF8() const {
-		const char32_t c = base[0];
+		const value_type c = base[0];
 		switch (sizeOfUTF8CodePoint(c)) {
 		case 1: return c;
 		case 2: return (c & 0b11111) << 6 | (base[1] & 0b111111);
@@ -196,14 +194,17 @@ class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag,
 	}
 
 public:
+	// provide public access to our instantiated base type
+	using base_type = BaseType;
+
 	// define "standard" constructors/destructor for iterators... note that as
 	// there isn't a good, generic default "uninitialized" value for iterators
-	// - this is a C++ language/stdlib issue - applications need to be quite
-	// careful if choosing to use the "default constructor" form
-	basic_utf8iterator<BaseType>() {}
-	basic_utf8iterator<BaseType>(const T& u) : base(u.base) {}
-	basic_utf8iterator<BaseType>(BaseType i) : base(i) {}
-	~basic_utf8iterator<BaseType>() {}
+	// - this is a C++ language/stdlib issue - we delete the default ctor, and
+	// require apps to explictily employ only valid copy-constructor exprs
+	basic_utf8iterator() = delete;
+	basic_utf8iterator(const T& u) : base(u.base) {}
+	basic_utf8iterator(BaseType i) : base(i) {}
+	~basic_utf8iterator() {}
 
 	// provide [expert] access to "base" iterator member
 	operator BaseType() const { return base; }
@@ -223,14 +224,14 @@ public:
 	// define "arithmetic" operators for iterators
 	//
 	// N.B. - based on char/byte ptrdiff_t, NOT code point "distance"!
-	T operator+(std::string::difference_type d) const { return T(base + d); }
-	T operator-(std::string::difference_type d) const { return T(base - d); }
-	T& operator+=(std::string::difference_type d) { base += d; return *this; }
-	T& operator-=(std::string::difference_type d) { base -= d; return *this; }
+	T operator+(difference_type d) const { return T(base + d); }
+	T operator-(difference_type d) const { return T(base - d); }
+	T& operator+=(difference_type d) { base += d; return *this; }
+	T& operator-=(difference_type d) { base -= d; return *this; }
 
 	// define "differencing" operators for iterators in same container
-	std::string::difference_type operator-(const T& u) const { return base - u.base; }
-	std::string::difference_type operator-(const BaseType& b) const { return base - b; }
+	difference_type operator-(const T& u) const { return base - u.base; }
+	difference_type operator-(const BaseType& b) const { return base - b; }
 
 	// define "relational" operators for iterators in same container
 	bool operator==(const T& u) const { return base == u.base; }
@@ -329,6 +330,9 @@ class compiler
 
 	std::string fsm;					// compiled fsm for current glob pattern
 
+	auto compileClass(const std::string& pattern, std::string::const_iterator p);
+	auto compileString(const std::string& pattern, std::string::const_iterator p);
+
 public:
 	compiler() {
 		// N.B. - it is IMPORTANT to do this in the constructor!
@@ -360,16 +364,14 @@ public:
 	const std::string& machine() const { return fsm; }
 
 private:
-	char base64Digit(int n) const {
-		const char* const base64chars =		// RFCs 2045/3548/4648/4880 et al
+	constexpr auto base64Digit(int n) const {
+		return								// RFCs 2045/3548/4648/4880 et al
 			"ABCDEFGHIJKLMNOPQRSTUVWXYZ"	//  0-25
 			"abcdefghijklmnopqrstuvwxyz"	// 26-51
 			"0123456789"					// 52-61
-			"+/";							// 62-63
-		return base64chars[n & 0x3f];
+			"+/"							// 62-63
+			[n & 0x3f];
 	}
-	ptrdiff_t compileClass(const std::string& pattern, std::string::const_iterator p);
-	ptrdiff_t compileString(const std::string& pattern, std::string::const_iterator p);
 	void emit(char c) { fsm.push_back(c); }
 	void emit(std::string s) { fsm.append(s); }
 	void emit(std::string::const_iterator i, std::string::const_iterator j) { fsm.append(i, j); }
@@ -379,12 +381,12 @@ private:
 	{
 		emitAt(i + 0, base64Digit((n & 0xfc) >> 6)), emitAt(i + 1, base64Digit((n & 0x3f)));
 	}
-	void emitPadding(int n, char c = '_') { while (n--) emit(c); }
-	size_t emitted() const { return fsm.size(); }
+	void emitPadding(int n, char c = '_') { while (n-- > 0) emit(c); }
+	auto emitted() const { return fsm.size(); }
 	void emitUTF8CodePoint(char32_t c) { codePointToUTF8(c, [this](char x) { emit(x); }); }
-	char hexDigit(int n) const { return "0123456789abcdef"[n & 0xf]; }
-	char peek(std::string::const_iterator i) const { return *++i; }
-	char32_t peek(utf8iterator u) const { return *++u; }
+	constexpr auto hexDigit(int n) const { return "0123456789abcdef"[n & 0xf]; }
+	auto peek(std::string::const_iterator i) const { return *++i; }
+	auto peek(utf8iterator u) const { return *++u; }
 };
 
 /*
@@ -432,8 +434,8 @@ public:
 	void pretty_print(std::ostream& s) const;
 
 private:
-	int base64Value(char c) const {
-		const char* const base64vals =
+	constexpr auto base64Value(char c) const {
+		return int(
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 10-1f <illegal>
@@ -452,17 +454,11 @@ private:
 			"\x00\x1a\x1b\x1c\x1d\x1e\x1f\x20"	// 60-6f <illegal>,a-o
 			"\x21\x22\x23\x24\x25\x26\x27\x28"
 			"\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30"	// 70-7f p-z,<illegal>
-			"\x31\x32\x33\x00\x00\x00\x00\x00";
-			return base64vals[c & 0x7f];
+			"\x31\x32\x33\x00\x00\x00\x00\x00"
+			[c & 0x7f]);
 	}
-	const utf8iteratorBare cbegin() const { return fsm; }
-	const utf8iteratorBare cend() const { return fsm + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm + 1) : strlen(fsm)); }
-	int decodeLengthAt(utf8iteratorBare i) const { return base64Value(opAt(i + 0)) * 64 + base64Value(opAt(i + 1)); }
-	int decodeModifierAt(utf8iteratorBare i) const { return hexValue(opAt(i)); }
-	int packedBitsetMask(int b) const { return "\x8\4\2\1"[(127 - b) & 0b11]; }
-	int packedBitsetNibbleAt(utf8iteratorBare i, int b) const { return hexValue(((const char*)i)[(127 - b) >> 2]); }
-	int hexValue(char c) const {
-		const char* const hexVals =
+	constexpr auto hexValue(char c) const {
+		return int(
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 10-1f <illegal>
@@ -481,11 +477,18 @@ private:
 			"\x00\x0a\x0b\x0c\x0d\x0e\x0f\x00"	// 60-6f <illegal>,a-f
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	//  ...  <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 70-7f <illegal>
-			"\x00\x00\x00\x00\x00\x00\x00\x00";
-		return hexVals[c & 0x7f];
+			"\x00\x00\x00\x00\x00\x00\x00\x00"
+			[c & 0x7f]);
 	}
-	char opAt(utf8iteratorBare i) const { return *(const char*)i; }
-	bool testPackedBitsetAt(utf8iteratorBare i, int b) const { return (packedBitsetNibbleAt(i, b) & packedBitsetMask(b)) != 0; }
+	auto opAt(utf8iteratorBare i) const { return *(utf8iteratorBare::base_type)i; }
+	auto decodeLengthAt(utf8iteratorBare i) const { return base64Value(opAt(i + 0)) * 64 + base64Value(opAt(i + 1)); }
+	auto decodeModifierAt(utf8iteratorBare i) const { return hexValue(opAt(i)); }
+	constexpr auto packedBitsetMask(int b) const { return int("\x8\4\2\1"[(127 - b) & 0b11]); }
+	auto packedBitsetNibbleAt(utf8iteratorBare i, int b) const { return hexValue(((utf8iteratorBare::base_type)i)[(127 - b) >> 2]); }
+	auto testPackedBitsetAt(utf8iteratorBare i, int b) const { return (packedBitsetNibbleAt(i, b) & packedBitsetMask(b)) != 0; }
+
+	const utf8iteratorBare cbegin() const { return fsm; }
+	const utf8iteratorBare cend() const { return fsm + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm + 1) : strlen(fsm)); }
 };
 
 /*
