@@ -46,10 +46,10 @@ using namespace rglob;
 
 	N.B. - a "false" return should probably NOT be ignored.
 */
-constexpr auto validateUTF8String(const char* s)
+constexpr auto validateUTF8String(std::string_view v)
 {
-	while (*s)
-		switch (auto n = sizeOfUTF8CodePoint(*s++); n) {
+	for (auto i = v.cbegin(); i != v.cend();)
+		switch (auto n = sizeOfUTF8CodePoint(*i++); n) {
 		case 0:
 			// invalid "lead char" of UTF-8 Unicode sequence
 			return false;
@@ -58,7 +58,7 @@ constexpr auto validateUTF8String(const char* s)
 			break;
 		default:
 			// multi-byte UTF-8 Unicode sequence...
-			for (auto c = *s; --n; c = *s++)
+			for (auto c = *i; --n; c = *i++)
 				if ((c & 0b11000000) != 0b10000000)
 					// invalid "following char" of UTF-8 Unicode sequence
 					return false;
@@ -84,7 +84,7 @@ constexpr auto validateUTF8String(const char* s)
 
 	The number of chars/BYTEs consumed is returned.
 */
-auto compiler::compileClass(const std::string& pattern, std::string::const_iterator p)
+auto compiler::compileClass(std::string_view pattern, std::string_view::const_iterator p)
 {
 	const auto base = p++;
 	const auto pos = emitted();
@@ -167,7 +167,7 @@ auto compiler::compileClass(const std::string& pattern, std::string::const_itera
 
 	The number of chars/BYTEs consumed is returned.
 */
-auto compiler::compileString(const std::string& pattern, std::string::const_iterator p)
+auto compiler::compileString(std::string_view pattern, std::string_view::const_iterator p)
 {
 	emit('=');
 	// initialize and "remember" location of length (to be filled in later)
@@ -178,7 +178,7 @@ auto compiler::compileString(const std::string& pattern, std::string::const_iter
 	const auto i = pattern.find_first_of("?*[", o);
 	const auto n = i != string::npos ? i - o : pattern.size() - o;
 	// ... and copy "exact match" string to finite state machine
-	emit(p, p + n);
+	emit(std::string_view(&*p, n));
 	emitLengthAt(lenPos, n);
 	return n;
 }
@@ -187,10 +187,10 @@ auto compiler::compileString(const std::string& pattern, std::string::const_iter
 	compile generates a "finite state machine" able to recognize text matching
 	the supplied [UTF-8] pattern.
 */
-void compiler::compile(const std::string& pattern)
+void compiler::compile(std::string_view pattern)
 {
 	// make SURE pattern is *structurally* valid UTF8
-	if (!validateUTF8String(pattern.c_str()))
+	if (!validateUTF8String(pattern))
 		throw std::invalid_argument("Pattern string is not valid UTF-8.");
 	fsm.clear();
 	// prep for filling in compiled length of pattern later
@@ -223,16 +223,42 @@ void compiler::compile(const std::string& pattern)
 }
 
 /*
+	emitPackedBitset inserts a representation of the just-processed "fast path"
+	character class into the current finite state machine definition.
+
+	The actual form of this data is dictated by two considerations:
+
+	1) The stdlib bitset implementation only has convenient "[de-]serialization"
+	options for up-to 64-element sets - the "1 character per bit" form is just a
+	bit too voluminous for our purposes, so we use our own 32 "ASCII/hex" char
+	string for the 128-bit sets used by the "fast path" logic.
+
+	2) Additionally, it was desirable to employ a format that permits fairly
+	efficient queries of individual bits WITHOUT having to "de-serialize" the
+	entire bitset.
+*/
+void compiler::emitPackedBitset(const std::bitset<128> & b)
+{
+	// output the 128-bit bitset in a 4-bits-per-ASCII/hex-character format.
+	for (auto c = 128 - 4; c >= 0; c -= 4)
+		emit(hexDigit(
+			(b.test((size_t)c + 0) ? 1 : 0) |
+			(b.test((size_t)c + 1) ? 2 : 0) |
+			(b.test((size_t)c + 2) ? 4 : 0) |
+			(b.test((size_t)c + 3) ? 8 : 0)));
+}
+
+/*
 	match examines and the supplied [UTF-8] target text and attempts to match
 	it against the previously compiled pattern, returning success/failure.
 */
-bool matcher::match(const std::string& target) const
+bool matcher::match(std::string_view target) const
 {
 	// make SURE target is *structurally* valid UTF8
-	if (!validateUTF8String(target.c_str()))
+	if (!validateUTF8String(target))
 		throw std::invalid_argument("Target string is not valid UTF-8.");
 	auto anchored = true, invert = false;
-	utf8iteratorBare next(nullptr);
+	utf8iteratorBare next = nullptr;
 	utf8iterator ti = target.cbegin();
 	// iterate over the previously compiled pattern representation, consuming
 	// recognized (matched) elements of the target text
@@ -400,30 +426,4 @@ void matcher::pretty_print(std::ostream& s) const
 		}
 		s << std::endl;
 	}
-}
-
-/*
-	emitPackedBitset inserts a representation of the just-processed "fast path"
-	character class into the current finite state machine definition.
-
-	The actual form of this data is dictated by two considerations:
-
-	1) The stdlib bitset implementation only has convenient "[de-]serialization"
-	options for up-to 64-element sets - the "1 character per bit" form is just a
-	bit too voluminous for our purposes, so we use our own 32 "ASCII/hex" char
-	string for the 128-bit sets used by the "fast path" logic.
-
-	2) Additionally, it was desirable to employ a format that permits fairly
-	efficient queries of individual bits WITHOUT having to "de-serialize" the
-	entire bitset.
-*/
-void compiler::emitPackedBitset(const std::bitset<128>& b)
-{
-	// output the 128-bit bitset in a 4-bits-per-ASCII/hex-character format.
-	for (auto c = 128 - 4; c >= 0; c -= 4)
-		emit(hexDigit(
-			(b.test((size_t)c + 0) ? 1 : 0) |
-			(b.test((size_t)c + 1) ? 2 : 0) |
-			(b.test((size_t)c + 2) ? 4 : 0) |
-			(b.test((size_t)c + 3) ? 8 : 0)));
 }

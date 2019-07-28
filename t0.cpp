@@ -4,7 +4,7 @@
 using namespace std;
 using namespace rglob;
 
-static void validate(string p, string t, bool x = true, bool pp = false);
+static void validate(string_view p, string_view t, bool x = true, bool pp = false);
 
 /*
 	Both the main and validate functions below illustrate some sample patterns
@@ -62,7 +62,7 @@ int main(int argc, char* argv[])
 	N.B. - whether or not the handy "u8" from of string literals is used, both
 	the pattern and target will be interpreted as containing Unicode in UTF-8!
 */
-static void validate(string p, string t, bool x, bool pp)
+static void validate(string_view p, string_view t, bool x, bool pp)
 {
 	auto mf = [](auto tf) { return tf ? "MATCH" : "FAIL!"; };
 	glob g;

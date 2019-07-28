@@ -28,6 +28,7 @@
 */
 
 #include <string>
+#include <string_view>
 #include <bitset>
 
 /*
@@ -137,6 +138,11 @@ inline void codePointToUTF8(char32_t c, CharOutput f)
 	represented in the UTF-8 encoding - typically a std::string::const_iterator
 	or a "bare" const char* is used as this underlying character iterator type.
 
+	C++17 Update: based on this new iteration of the C++ language standard, we
+	have a) quit deriving from std::iterator, as this was not required and is
+	now deprecated, and b) switched to "expecting" a std::string_view -based
+	iterator as a typical template param, given the new [string_view] order.
+
 	While this is a functional "bidirectional iterator" - and is almost able to
 	be a "random access iterator" (BUT, no subscripting), it must be noted that
 
@@ -154,13 +160,14 @@ inline void codePointToUTF8(char32_t c, CharOutput f)
 	UTF-8 encoding, the "operator--" implementation is not [strictly speaking]
 	quite "constant time" - for those worried about such things.
 */
-template<class BaseType>
-class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag, char32_t>
+template<class BaseIteratorType>
+class basic_utf8iterator
 {
-	// provide [internal] short-hand access to our instantiated type
-	using T = basic_utf8iterator<BaseType>;
+	// provide [internal] short-hand access to our value and instantiated types
+	using _Ty = char32_t;
+	using T = basic_utf8iterator<BaseIteratorType>;
 
-	BaseType base;						// our actual "base" iterator
+	BaseIteratorType base;						// our actual "base" iterator
 
 	// codePointFromUTF8 assembles and returns a full [32-bit] Unicode code point
 	// from a UTF-8 encoded sequence of bytes
@@ -168,8 +175,8 @@ class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag,
 	// N.B. - as it computes the length of the encoded representation from the data
 	// itself - as well as "trusting" the bit patterns contained therein - it will
 	// ONLY work with well-formed UTF-8 encoded data!
-	value_type codePointFromUTF8() const {
-		const value_type c = base[0];
+	_Ty codePointFromUTF8() const {
+		const _Ty c = base[0];
 		switch (sizeOfUTF8CodePoint(c)) {
 		case 1: return c;
 		case 2: return (c & 0b11111) << 6 | (base[1] & 0b111111);
@@ -184,7 +191,7 @@ class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag,
 	//
 	// N.B. - depends on BOTH well-formed UTF-8 encoded data AND caller not
 	// attempting to position iterator prior to beginning of container!
-	size_t sizeOfPreviousUTF8CodePoint() const {
+	constexpr size_t sizeOfPreviousUTF8CodePoint() const {
 		return
 			(*(base - 1) & 0b11000000) != 0b10000000 ? 1 :
 			(*(base - 2) & 0b11000000) != 0b10000000 ? 2 :
@@ -194,8 +201,16 @@ class basic_utf8iterator : public std::iterator<std::bidirectional_iterator_tag,
 	}
 
 public:
+	// provide public access to our constituent types (now required given that
+	// we are no longer deriving from std::iterator)
+	using iterator_category = std::bidirectional_iterator_tag;
+	using value_type = _Ty;
+	using difference_type = ptrdiff_t;
+	using pointer = value_type *;
+	using reference = value_type &;
+
 	// provide public access to our instantiated base type
-	using base_type = BaseType;
+	using base_type = BaseIteratorType;
 
 	// define "standard" constructors/destructor for iterators... note that as
 	// there isn't a good, generic default "uninitialized" value for iterators
@@ -203,11 +218,11 @@ public:
 	// require apps to explictily employ only valid copy-constructor exprs
 	basic_utf8iterator() = delete;
 	basic_utf8iterator(const T& u) : base(u.base) {}
-	basic_utf8iterator(BaseType i) : base(i) {}
+	basic_utf8iterator(base_type i) : base(i) {}
 	~basic_utf8iterator() {}
 
 	// provide [expert] access to "base" iterator member
-	operator BaseType() const { return base; }
+	operator base_type() const { return base; }
 
 	// define "copy assignment" operator for iterators
 	T& operator=(const T& u) { base = u.base; return *this; }
@@ -231,29 +246,29 @@ public:
 
 	// define "differencing" operators for iterators in same container
 	difference_type operator-(const T& u) const { return base - u.base; }
-	difference_type operator-(const BaseType& b) const { return base - b; }
+	difference_type operator-(const base_type& b) const { return base - b; }
 
 	// define "relational" operators for iterators in same container
 	bool operator==(const T& u) const { return base == u.base; }
-	bool operator==(const BaseType& b) const { return base == b; }
+	bool operator==(const base_type& b) const { return base == b; }
 	bool operator!=(const T& u) const { return base != u.base; }
-	bool operator!=(const BaseType& b) const { return base != b; }
+	bool operator!=(const base_type& b) const { return base != b; }
 
 	bool operator>(const T& u) const { return base > u.base; }
-	bool operator>(const BaseType& i) const { return base > i; }
+	bool operator>(const base_type& i) const { return base > i; }
 	bool operator<(const T& u) const { return base < u.base; }
-	bool operator<(const BaseType& i) const { return base < i; }
+	bool operator<(const base_type& i) const { return base < i; }
 
 	bool operator>=(const T& u) const { return base >= u.base; }
-	bool operator>=(const BaseType& i) const { return base >= i; }
+	bool operator>=(const base_type& i) const { return base >= i; }
 	bool operator<=(const T& u) const { return base <= u.base; }
-	bool operator<=(const BaseType& i) const { return base <= i; }
+	bool operator<=(const base_type& i) const { return base <= i; }
 };
 
 /*
 	Create the 2 UTF-8 iterators used by the rglob compiler and matcher classes.
 */
-typedef basic_utf8iterator<std::string::const_iterator> utf8iterator;
+typedef basic_utf8iterator<std::string_view::const_iterator> utf8iterator;
 typedef basic_utf8iterator<const char*> utf8iteratorBare;
 
 /*
@@ -330,8 +345,8 @@ class compiler
 
 	std::string fsm;					// compiled fsm for current glob pattern
 
-	auto compileClass(const std::string& pattern, std::string::const_iterator p);
-	auto compileString(const std::string& pattern, std::string::const_iterator p);
+	auto compileClass(std::string_view pattern, std::string_view::const_iterator p);
+	auto compileString(std::string_view pattern, std::string_view::const_iterator p);
 
 public:
 	compiler() {
@@ -354,7 +369,7 @@ public:
 		In all cases, an explanatory text message is included, with position
 		information if applicable.
 	*/
-	void compile(const std::string& pattern);
+	void compile(std::string_view pattern);
 
 	/*
 		machine returns the compiled form of the [valid] glob pattern supplied
@@ -373,8 +388,7 @@ private:
 			[n & 0x3f];
 	}
 	void emit(char c) { fsm.push_back(c); }
-	void emit(std::string s) { fsm.append(s); }
-	void emit(std::string::const_iterator i, std::string::const_iterator j) { fsm.append(i, j); }
+	void emit(std::string_view v) { fsm.append(v); }
 	void emitAt(size_t i, char c) { fsm[i] = c; }
 	void emitPackedBitset(const std::bitset<128>& b);
 	void emitLengthAt(size_t i, size_t n)
@@ -385,7 +399,7 @@ private:
 	auto emitted() const { return fsm.size(); }
 	void emitUTF8CodePoint(char32_t c) { codePointToUTF8(c, [this](char x) { emit(x); }); }
 	constexpr auto hexDigit(int n) const { return "0123456789abcdef"[n & 0xf]; }
-	auto peek(std::string::const_iterator i) const { return *++i; }
+	constexpr auto peek(std::string_view::const_iterator i) const { return *++i; }
 	auto peek(utf8iterator u) const { return *++u; }
 };
 
@@ -397,7 +411,7 @@ private:
 */
 class matcher
 {
-	const char* fsm;
+	std::string_view fsm;
 
 public:
 	/*
@@ -415,8 +429,7 @@ public:
 		and may therefore be a bit relaxed in our internal error-checking".
 	*/
 	matcher() = delete;
-	matcher(const std::string& m) : fsm(m.c_str()) {}
-	matcher(const char* s) : fsm(s) {}
+	matcher(std::string_view m) : fsm(m) {}
 
 	/*
 		match accepts a "target" string and attempts to match it to the pattern
@@ -425,7 +438,7 @@ public:
 
 		invalid_argument if the target string is NOT valid UTF-8
 	*/
-	bool match(const std::string& target) const;
+	bool match(std::string_view target) const;
 
 	/*
 		pretty_print outputs a formatted representation of the current finite
@@ -435,7 +448,7 @@ public:
 
 private:
 	constexpr auto base64Value(char c) const {
-		return int(
+		return
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 10-1f <illegal>
@@ -455,10 +468,10 @@ private:
 			"\x21\x22\x23\x24\x25\x26\x27\x28"
 			"\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30"	// 70-7f p-z,<illegal>
 			"\x31\x32\x33\x00\x00\x00\x00\x00"
-			[c & 0x7f]);
+			[c & 0x7f];
 	}
 	constexpr auto hexValue(char c) const {
-		return int(
+		return
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 10-1f <illegal>
@@ -478,17 +491,17 @@ private:
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	//  ...  <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 70-7f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
-			[c & 0x7f]);
+			[c & 0x7f];
 	}
 	auto opAt(utf8iteratorBare i) const { return *(utf8iteratorBare::base_type)i; }
 	auto decodeLengthAt(utf8iteratorBare i) const { return base64Value(opAt(i + 0)) * 64 + base64Value(opAt(i + 1)); }
 	auto decodeModifierAt(utf8iteratorBare i) const { return hexValue(opAt(i)); }
-	constexpr auto packedBitsetMask(int b) const { return int("\x8\4\2\1"[(127 - b) & 0b11]); }
+	constexpr auto packedBitsetMask(int b) const { return "\x8\4\2\1"[(127 - b) & 0b11]; }
 	auto packedBitsetNibbleAt(utf8iteratorBare i, int b) const { return hexValue(((utf8iteratorBare::base_type)i)[(127 - b) >> 2]); }
 	auto testPackedBitsetAt(utf8iteratorBare i, int b) const { return (packedBitsetNibbleAt(i, b) & packedBitsetMask(b)) != 0; }
 
-	const utf8iteratorBare cbegin() const { return fsm; }
-	const utf8iteratorBare cend() const { return fsm + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm + 1) : strlen(fsm)); }
+	utf8iteratorBare cbegin() const { return fsm.data(); }
+	utf8iteratorBare cend() const { return fsm.data() + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm.data() + 1) : fsm.size()); }
 };
 
 /*
