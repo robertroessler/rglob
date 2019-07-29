@@ -1,7 +1,7 @@
 /*
 	rglob.h - interface of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016,2019, Robert Roessler
+	Copyright(c) 2016-2019, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without

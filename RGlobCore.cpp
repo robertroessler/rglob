@@ -1,7 +1,7 @@
 /*
 	RGlobCore.cpp - "core" functionality of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016,2019, Robert Roessler
+	Copyright(c) 2016-2019, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -29,7 +29,6 @@
 
 #include <algorithm>
 #include <exception>
-#include <iterator>
 #include <iostream>
 #include <iomanip>
 #include "rglob.h"
@@ -101,7 +100,7 @@ auto compiler::compileClass(std::string_view pattern, std::string_view::const_it
 	const auto close = pattern.find_first_of(']', o);
 	// ... and throw if we don't see one
 	if (close == string::npos)
-		throw std::invalid_argument(string("Missing terminating ']' for character class @ ") + &*base);
+		throw std::invalid_argument(string("Missing terminating ']' for character class @ ") + string(pattern.substr(base - pattern.cbegin())));
 	if (all_of(p, p + (close - o), [](char c) { return isascii(c); })) {
 		// the character class is ALL ASCII chars, so we can use the "fast path"
 		emit('{');
@@ -178,7 +177,7 @@ auto compiler::compileString(std::string_view pattern, std::string_view::const_i
 	const auto i = pattern.find_first_of("?*[", o);
 	const auto n = i != string::npos ? i - o : pattern.size() - o;
 	// ... and copy "exact match" string to finite state machine
-	emit(std::string_view(&*p, n));
+	emit(pattern.substr(p - pattern.cbegin(), n));
 	emitLengthAt(lenPos, n);
 	return n;
 }
@@ -212,7 +211,7 @@ void compiler::compile(std::string_view pattern)
 			incr = compileString(pattern, pi);
 		}
 		if (emitted() > AllowedMaxFSM)
-			throw std::length_error(string("Exceeded allowed compiled pattern size @ ") + &*pi);
+			throw std::length_error(string("Exceeded allowed compiled pattern size @ ") + string(pattern.substr(pi - pattern.cbegin())));
 	}
 	// NOW fill in length of compiled pattern... IFF there is any actual pattern
 	auto const n = emitted();
