@@ -1,7 +1,7 @@
 /*
 	rglob.h - interface of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016-2019, Robert Roessler
+	Copyright(c) 2016-2022, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -46,7 +46,7 @@ namespace rglob {
 	Make sure we have this - Just In Case(tm).
 */
 #ifndef isascii
-#define isascii(c) ((int)(c) < 128)
+#define isascii(c) ((int)(c) >= 0 && (int)(c) < 128)
 #endif
 
 constexpr size_t LengthSize = 2;		// # of chars in [base64] encoded length
@@ -379,7 +379,7 @@ public:
 	const std::string& machine() const { return fsm; }
 
 private:
-	constexpr auto base64Digit(int n) const {
+	static constexpr auto base64Digit(int n) {
 		return								// RFCs 2045/3548/4648/4880 et al
 			"ABCDEFGHIJKLMNOPQRSTUVWXYZ"	//  0-25
 			"abcdefghijklmnopqrstuvwxyz"	// 26-51
@@ -387,6 +387,7 @@ private:
 			"+/"							// 62-63
 			[n & 0x3f];
 	}
+	static constexpr auto hexDigit(int n) { return "0123456789abcdef"[n & 0xf]; }
 	void emit(char c) { fsm.push_back(c); }
 	void emit(std::string_view v) { fsm.append(v); }
 	void emitAt(size_t i, char c) { fsm[i] = c; }
@@ -398,7 +399,6 @@ private:
 	void emitPadding(int n, char c = '_') { while (n-- > 0) emit(c); }
 	auto emitted() const { return fsm.size(); }
 	void emitUTF8CodePoint(char32_t c) { codePointToUTF8(c, [this](char x) { emit(x); }); }
-	constexpr auto hexDigit(int n) const { return "0123456789abcdef"[n & 0xf]; }
 	constexpr auto peek(std::string_view::const_iterator i) const { return *++i; }
 	auto peek(utf8iterator u) const { return *++u; }
 };
@@ -442,12 +442,13 @@ public:
 
 	/*
 		pretty_print outputs a formatted representation of the current finite
-		state machine produced by compiler::compile to the supplied ostream.
+		state machine produced by compiler::compile to the supplied ostream
+		(with optional layout "prefix" per line).
 	*/
-	void pretty_print(std::ostream& s) const;
+	void pretty_print(std::ostream& s, std::string_view pre = "") const;
 
 private:
-	constexpr auto base64Value(char c) const {
+	static constexpr int base64Value(char c) {
 		return
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -470,7 +471,7 @@ private:
 			"\x31\x32\x33\x00\x00\x00\x00\x00"
 			[c & 0x7f];
 	}
-	constexpr auto hexValue(char c) const {
+	static constexpr int hexValue(char c) {
 		return
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -496,7 +497,7 @@ private:
 	auto opAt(utf8iteratorBare i) const { return *(utf8iteratorBare::base_type)i; }
 	auto decodeLengthAt(utf8iteratorBare i) const { return base64Value(opAt(i + 0)) * 64 + base64Value(opAt(i + 1)); }
 	auto decodeModifierAt(utf8iteratorBare i) const { return hexValue(opAt(i)); }
-	constexpr auto packedBitsetMask(int b) const { return "\x8\4\2\1"[(127 - b) & 0b11]; }
+	constexpr int packedBitsetMask(int b) const { return "\x8\4\2\1"[(127 - b) & 0b11]; }
 	auto packedBitsetNibbleAt(utf8iteratorBare i, int b) const { return hexValue(((utf8iteratorBare::base_type)i)[(127 - b) >> 2]); }
 	auto testPackedBitsetAt(utf8iteratorBare i, int b) const { return (packedBitsetNibbleAt(i, b) & packedBitsetMask(b)) != 0; }
 

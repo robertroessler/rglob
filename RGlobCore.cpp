@@ -1,7 +1,7 @@
 /*
 	RGlobCore.cpp - "core" functionality of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016-2019, Robert Roessler
+	Copyright(c) 2016-2022, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -57,10 +57,13 @@ constexpr auto validateUTF8String(std::string_view v)
 			break;
 		default:
 			// multi-byte UTF-8 Unicode sequence...
-			for (auto c = *i; --n; c = *i++)
-				if ((c & 0b11000000) != 0b10000000)
+			while (--n && i != v.cend())
+				if (auto c = *i++; (c & 0b11000000) != 0b10000000)
 					// invalid "following char" of UTF-8 Unicode sequence
 					return false;
+			if (n && i == v.cend())
+				// you are NOT paranoid if the UTF-8 really IS malformed!
+				return false;
 		}
 	return true;
 }
@@ -362,12 +365,12 @@ bool matcher::match(std::string_view target) const
 	pretty_print produces a formatted representation of the compiled form of the
 	current finite state machine on the supplied ostream.
 */
-void matcher::pretty_print(std::ostream& s) const
+void matcher::pretty_print(std::ostream& s, std::string_view pre) const
 {
 	// (local fn to compute width for Unicode representation)
 	auto w = [](char32_t c) { return c < 0x010000 ? 4 : c < 0x100000 ? 5 : 6; };
 	// (local fn to show Unicode char as ASCII if we can, else use "U+..." form)
-	auto a = [&](char32_t c)->std::ostream& {
+	auto a = [&](char32_t c) -> std::ostream& {
 		return
 			isascii(c) ?
 				s << (char)c :
@@ -378,7 +381,7 @@ void matcher::pretty_print(std::ostream& s) const
 	// iterate over each element of finite state machine...
 	for (auto first = cbegin(), mi = first, last = cend(); mi != last;) {
 		const auto op = *mi++;
-		s << "off:" << std::setw(4) << (mi - first - 1) << " op: " << (char)op;
+		s << pre << "[" << std::setw(4) << (mi - first - 1) << "] op: " << (char)op;
 		switch (op) {
 		case '#':
 			// display length of compiled pattern
@@ -387,7 +390,7 @@ void matcher::pretty_print(std::ostream& s) const
 			break;
 		case '[':
 			// display control metadata from "interpreted" character class
-			s << " mod: " << decodeModifierAt(mi) << " len: " << decodeLengthAt(mi + 1);
+			s << " mod: " << (char)*mi << " len: " << decodeLengthAt(mi + 1);
 			mi += 1 + LengthSize;
 			break;
 		case '{':
@@ -400,12 +403,10 @@ void matcher::pretty_print(std::ostream& s) const
 			// display SINGLE match case from "interpreted" character class
 			s << " val: ", a(*mi++);
 			break;
-		case '-': {
+		case '-':
 			// display RANGE match case from "interpreted" character class
-			const auto p1 = *mi++, p2 = *mi++;
-			s << " val: ", a(p1) << ' ', a(p2);
+			s << " val: ", a(*mi++) << ' ', a(*mi++);
 			break;
-		}
 		case '=': {
 			// display "exact match" string from glob pattern
 			const auto n = decodeLengthAt(mi);

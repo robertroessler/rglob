@@ -6,7 +6,7 @@ The RGlob (rglob) project provides a simple pattern-matcher supporting patterns
 constructed in the familiar "glob" style - but separated from any of the file or
 folder matching operations - JUST the patterns.
 
-It is written in fairly idiomatic modern C++ 11/14, and in addition to the main
+It is written in fairly idiomatic modern C++ 17, and in addition to the main
 pattern compiling/matching functionality, also includes a few "helper" functions
 for working with UTF-8 -encoded Unicode text - and a template "adaptor" class
 that augments both std::string iterators and "bare" const char* text pointers to
@@ -22,13 +22,13 @@ to contain no dependencies (overtly or lurking) on Windows.
 
 Possible items to work on - for myself or collaborators include
 
-* additonal (and properly laid out) test cases, both to serve as actual tests
-and to show examples of usage
+* additional (and properly laid out) test cases, both to serve as actual tests
+and to show examples of usage... DONE!
 
 * compiling character classes as "subroutines" - this could provide significant
 space savings in more complex/repetitive patterns
 
-* as only Visual Studio 2015 project and solution files are initially present,
+* as only Visual Studio 2022 project and solution files are initially present,
 control files for building in non-Windows environments could be useful
 
 ## ProbablyNot

@@ -18,16 +18,21 @@ static void validate(string_view p, string_view t, bool x = true, bool pp = fals
 */
 int main(int argc, char* argv[])
 {
+	// validate our ability to validate UTF-8
+	validate("BAD UTF-8 \x80", "a", false);	// (illegal 1st char of UTF-8 seq)
+	validate("b", "BAD UTF-8 \xc0 ",false);	// (illegal 2nd char of UTF-8 seq)
+	validate("BAD UTF-8 \xf0", "c", false);	// ("\xf0" needs 4-char UTF-8 seq)
+
 	// validate the simplest patterns...
 	validate("abc", "abc");
 	validate("abc", "abC", false);
 	validate("ab?", "abC");
 	validate("*bar", "foobar");
-	validate("*ba?", "foobaR");
+	validate("*ba?", "foobaR", true, true);
 
 	// ... now for some character classes
-	validate("[A-Z][0-9][^0-9]", "B2B");
-	validate("[A-Z][0-9][^0-9]", "B2Bx", false);
+	validate("[A-Z][0-9][^0-9]", "B2B", true, true);
+	validate("[A-Z][0-9][^0-9ф]", "B2Bx", false, true);
 	validate("[A-Z][0-9][^0-9]*", "B2Bx-ray");
 	validate("[A-Z][0-9][^0-9]", "B23", false);
 
@@ -76,7 +81,7 @@ static void validate(string_view p, string_view t, bool x, bool pp)
 		return; // we're outta here - after a compile fail, "match" is undefined
 	}
 	if (pp)
-		cout << "Pretty_print of " << p << ':' << endl, g.pretty_print(cout);
+		cout << "Pretty_print of " << p << ':' << endl, g.pretty_print(cout, "    ");
 	try {
 		const auto r = g.match(t);
 		cout << "Want "
