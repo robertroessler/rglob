@@ -1,7 +1,7 @@
 /*
 	RGlobCore.cpp - "core" functionality of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016-2022, Robert Roessler
+	Copyright(c) 2016-2023, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -58,7 +58,7 @@ constexpr auto validateUTF8String(std::string_view v)
 		default:
 			// multi-byte UTF-8 Unicode sequence...
 			while (--n && i != v.cend())
-				if (auto c = *i++; (c & 0b11000000) != 0b10000000)
+				if (const auto c = *i++; (c & 0b11000000) != 0b10000000)
 					// invalid "following char" of UTF-8 Unicode sequence
 					return false;
 			if (n && i == v.cend())
@@ -115,22 +115,18 @@ auto compiler::compileClass(std::string_view pattern, std::string_view::const_it
 		if (leadingCloseBracket)
 			b.flip(']');
 		// process all class members by "flipping" corresponding bits...
-		while (*p != ']') {
-			const auto c1 = *p++, c2 = *p;
-			if (c2 == '-' && peek(p) != ']') {
+		while (*p != ']')
+			if (const auto c1 = *p++, c2 = *p; c2 == '-' && peek(p) != ']') {
 				const auto c3 = *++p;
 				for (auto c = c1; c <= c3; c++)
 					b.flip(c);
 				++p;
-			}
-			else
+			} else
 				b.flip(c1);
-		}
 		// ... finish up by copying the [packed] bitset to finite state machine
 		emitPackedBitset(b), ++p;
 		return p - base;
-	}
-	else {
+	} else {
 		// "general case" character class, output single and range match exprs
 		emit('[');
 		emit(hexDigit(invert ? 1 : 0));
@@ -142,18 +138,14 @@ auto compiler::compileClass(std::string_view pattern, std::string_view::const_it
 		// NOW switch to full UTF-8 (Unicode) processing...
 		utf8iterator u = p;
 		// ... and process all class members by outputting match-time operators
-		while (*u != ']') {
-			const auto c1 = *u++;
-			const auto c2 = *u;
-			if (c2 == '-' && peek(u) != ']') {
+		while (*u != ']')
+			if (const auto c1 = *u++, c2 = *u; c2 == '-' && peek(u) != ']') {
 				// (generate "char range" matching operator)
 				const auto c3 = *++u;
 				emit('-'), emitUTF8CodePoint(c1), emitUTF8CodePoint(c3), ++u;
-			}
-			else
+			} else
 				// (generate "single char" matching operator)
 				emit('+'), emitUTF8CodePoint(c1);
-		}
 		// finish up by generating the "NO match" operator...
 		emit(']'), ++u;
 		// ... and output the length of the character class "interpreter" logic
@@ -217,8 +209,7 @@ void compiler::compile(std::string_view pattern)
 			throw std::length_error(string("Exceeded allowed compiled pattern size @ ") + string(pattern.substr(pi - pattern.cbegin())));
 	}
 	// NOW fill in length of compiled pattern... IFF there is any actual pattern
-	auto const n = emitted();
-	if (n > 1 + LengthSize)
+	if (const auto n = emitted(); n > 1 + LengthSize)
 		emitLengthAt(1, n - (1 + LengthSize));
 	else
 		fsm.clear();
@@ -239,7 +230,7 @@ void compiler::compile(std::string_view pattern)
 	efficient queries of individual bits WITHOUT having to "de-serialize" the
 	entire bitset.
 */
-void compiler::emitPackedBitset(const std::bitset<128> & b)
+void compiler::emitPackedBitset(const std::bitset<128>& b)
 {
 	// output the 128-bit bitset in a 4-bits-per-ASCII/hex-character format.
 	for (auto c = 128 - 4; c >= 0; c -= 4)
@@ -287,8 +278,7 @@ bool matcher::match(std::string_view target) const
 		case '{':
 			// perform "fast path" (all-ASCII) character class match
 			if (anchored) {
-				const auto tx = *ti;
-				if (!(isascii(tx) && testPackedBitsetAt(mi, tx)))
+				if (const auto tx = *ti; !(isascii(tx) && testPackedBitsetAt(mi, tx)))
 					return false;
 				// (consume target code point(s) and skip to after the ']')
 				++ti, mi += 32;
@@ -304,19 +294,14 @@ bool matcher::match(std::string_view target) const
 			// attempt to match single "interpreted" character class code point
 			const auto p = *mi++;
 			if (anchored) {
-				const auto tx = *ti;
-				if ((p == tx) ^ invert) {
+				if (const auto tx = *ti; (p == tx) ^ invert)
 					// (consume target code point(s) and skip to after the ']')
 					++ti, mi = next;
-					break;
-				}
 			} else {
 				auto i = find_if(ti, utf8iterator(target.cend()), [=](char32_t tx) { return (p == tx) ^ invert; });
-				if (i != target.cend()) {
+				if (i != target.cend())
 					// (consume target code point(s) and skip to after the ']')
 					ti = ++i, anchored = true, mi = next;
-					break;
-				}
 			}
 			break;
 		}
@@ -325,18 +310,14 @@ bool matcher::match(std::string_view target) const
 			const auto p1 = *mi++, p2 = *mi++;
 			if (anchored) {
 				const auto tx = *ti;
-				if ((p1 <= tx && tx <= p2) ^ invert) {
+				if ((p1 <= tx && tx <= p2) ^ invert)
 					// (consume target code point(s) and skip to after the ']')
 					++ti, mi = next;
-					break;
-				}
 			} else {
 				auto i = find_if(ti, utf8iterator(target.cend()), [=](char32_t tx) { return (p1 <= tx && tx <= p2) ^ invert; });
-				if (i != target.cend()) {
+				if (i != target.cend())
 					// (consume target code point(s) and skip to after the ']')
 					ti = ++i, anchored = true, mi = next;
-					break;
-				}
 			}
 			break;
 		}

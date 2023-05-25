@@ -1,7 +1,7 @@
 /*
 	rglob.h - interface of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016-2022, Robert Roessler
+	Copyright(c) 2016-2023, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -376,7 +376,7 @@ public:
 		to compile... note that while this is "human-readable", the matcher
 		class's pretty_print does a better job of displaying this information.
 	*/
-	const std::string& machine() const { return fsm; }
+	const std::string_view machine() const { return fsm; }
 
 private:
 	static constexpr auto base64Digit(int n) {
