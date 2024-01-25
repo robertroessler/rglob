@@ -47,8 +47,8 @@ int main(int argc, char* argv[])
 	// the next two validations are really about showing the equivalence between
 	// two different ways of inserting Unicode chars into strings (hard vs easy)
 	// (they really ARE the same pattern, see the pretty_print output yourself!)
-	validate(u8"*[\u0410-\u042F \u0430-\u044F][\u0410-\u042F \u0430-\u044F][\u0410-\u042F \u0430-\u044F]bar\u03B5", u8"fu\u041f \u0444bar\u03B5", true, true);
-	validate(u8"*[А-Я а-я][А-Я а-я][А-Я а-я]barε", u8"fuП фbarε", true, true);
+	validate("*[\u0410-\u042F \u0430-\u044F][\u0410-\u042F \u0430-\u044F][\u0410-\u042F \u0430-\u044F]bar\u03B5", "fu\u041f \u0444bar\u03B5", true, true);
+	validate("*[А-Я а-я][А-Я а-я][А-Я а-я]barε", "fuП фbarε", true, true);
 	return 0;
 }
 

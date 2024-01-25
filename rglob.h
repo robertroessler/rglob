@@ -1,7 +1,7 @@
 /*
-	rglob.h - interface of the RGlob "glob" pattern-matcher
+	rglob.h - interface (AND implementation) of the RGlob "glob" pattern-matcher
 
-	Copyright(c) 2016-2023, Robert Roessler
+	Copyright(c) 2016-2024, Robert Roessler
 	All rights reserved.
 
 	Redistribution and use in source and binary forms, with or without
@@ -30,6 +30,13 @@
 #include <string>
 #include <string_view>
 #include <bitset>
+#include <algorithm>
+#include <exception>
+#include <iostream>
+#include <iomanip>
+
+using std::string;
+using std::string_view;
 
 /*
 	The rglob namespace contains the classes compiler, matcher, and glob, the
@@ -50,86 +57,122 @@ namespace rglob {
 #endif
 
 constexpr size_t LengthSize = 2;		// # of chars in [base64] encoded length
+constexpr size_t AllowedMaxFSM = 4096-1;// limit [compiled] finite state machine
 
-/*
-	sizeOfUTF8CodePoint returns the length in bytes of a UTF-8 code point, based
-	on being passed the [presumed] first byte.
+// (internally used definitions not intended to appear in the rglob namespace)
+namespace detail {
+	/*
+		sizeOfUTF8CodePoint returns the length in bytes of a UTF-8 code point, based
+		on being passed the [presumed] first byte.
 
-	N.B. - if the passed value does NOT represent [the start of] a well-formed
-	UTF-8 code point, the returned length is ZERO, which means this should most
-	likely be used at least initially in a "validation" capacity.
+		N.B. - if the passed value does NOT represent [the start of] a well-formed
+		UTF-8 code point, the returned length is ZERO, which means this should most
+		likely be used at least initially in a "validation" capacity.
 
-	Conceptually, this is the logic:
+		Conceptually, this is the logic:
 
-	return
-		isascii(c)                     ? 1 :
-		(c & 0b11100000) == 0b11000000 ? 2 :
-		(c & 0b11110000) == 0b11100000 ? 3 :
-		(c & 0b11111000) == 0b11110000 ? 4 :
-		0; // (caller(s) should NOTICE this)
-*/
-constexpr size_t sizeOfUTF8CodePoint(char32_t c)
-{
-	return
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 00-0f 1-byte UTF-8/ASCII
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 10-1f
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 20-2f
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 30-3f
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 40-4f
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 50-5f
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 60-6f
-		"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 70-7f
+		return
+			isascii(c)                     ? 1 :
+			(c & 0b11100000) == 0b11000000 ? 2 :
+			(c & 0b11110000) == 0b11100000 ? 3 :
+			(c & 0b11111000) == 0b11110000 ? 4 :
+			0; // (caller(s) should NOTICE this)
+	*/
+	constexpr size_t sizeOfUTF8CodePoint(char32_t c) noexcept
+	{
+		return
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 00-0f 1-byte UTF-8/ASCII
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 10-1f
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 20-2f
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 30-3f
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 40-4f
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 50-5f
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 60-6f
+			"\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1"	// 70-7f
 
-		"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// 80-8f <illegal>
-		"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// 90-9f
-		"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// a0-af
-		"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// b0-bf
+			"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// 80-8f <illegal>
+			"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// 90-9f
+			"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// a0-af
+			"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"	// b0-bf
 
-		"\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2"	// c0-cf 2-byte UTF-8
-		"\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2"	// d0-df
+			"\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2"	// c0-cf 2-byte UTF-8
+			"\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2"	// d0-df
 
-		"\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3"	// e0-ef 3-byte UTF-8
+			"\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3"	// e0-ef 3-byte UTF-8
 
-		"\4\4\4\4\4\4\4\4"					// f0-f7 4-byte UTF-8
+			"\4\4\4\4\4\4\4\4"					// f0-f7 4-byte UTF-8
 
-		"\0\0\0\0\0\0\0\0"					// f8-ff <illegal>
-		[c & 0xff];
-}
+			"\0\0\0\0\0\0\0\0"					// f8-ff <illegal>
+			[c & 0xff];
+	}
 
-/*
-	codePointToUTF8 is a template function providing flexible output options for
-	the encoded UTF-8 chars representing the supplied Unicode code point.
+	/*
+		validateUTF8String evaluates the [NUL-terminated] sequence of chars supplied
+		for "valid" UTF-8 encoding - structurally, NOT in terms of specific values
+		of code points / combinations.
 
-	It is a template function so you can choose to store the output UTF-8 stream
-	either like this
+		Returns the result of this evaluation.
 
-	char buf[80], * s = buf;
-	codePointToUTF8(c, [&](char x) { *s++ = x; })
+		N.B. - a "false" return should probably NOT be ignored.
+	*/
+	constexpr auto validateUTF8String(string_view v)
+	{
+		for (auto i = v.cbegin(); i != v.cend();)
+			switch (auto n = sizeOfUTF8CodePoint(*i++); n) {
+			case 0:
+				// invalid "lead char" of UTF-8 Unicode sequence
+				return false;
+			case 1:
+				// ASCII char
+				break;
+			default:
+				// multi-byte UTF-8 Unicode sequence...
+				while (--n && i != v.cend())
+					if (const auto c = *i++; (c & 0b11000000) != 0b10000000)
+						// invalid "following char" of UTF-8 Unicode sequence
+						return false;
+				if (n && i == v.cend())
+					// you are NOT paranoid if the UTF-8 really IS malformed!
+					return false;
+			}
+		return true;
+	}
 
-	or this
+	/*
+		codePointToUTF8 is a template function providing flexible output options for
+		the encoded UTF-8 chars representing the supplied Unicode code point.
 
-	std::string buf;
-	codePointToUTF8(c, [&](char x) { buf.push_back(x); })
+		It is a template function so you can choose to store the output UTF-8 stream
+		either like this
 
-	... where c is a Unicode code point in a char32_t.
-*/
-template<class CharOutput>
-inline void codePointToUTF8(char32_t c, CharOutput f)
-{
-	if (c < 0x80)
-		f((char)c);
-	else if (c < 0x800)
-		f((char)(0b11000000 | (c >> 6))),
-		f((char)((c & 0b111111) | 0b10000000));
-	else if (c < 0x10000)
-		f((char)(0b11100000 | (c >> 12))),
-		f((char)(((c >> 6) & 0b111111) | 0b10000000)),
-		f((char)((c & 0b111111) | 0b10000000));
-	else
-		f((char)(0b11110000 | (c >> 18))),
-		f((char)(((c >> 12) & 0b111111) | 0b10000000)),
-		f((char)(((c >> 6) & 0b111111) | 0b10000000)),
-		f((char)((c & 0b111111) | 0b10000000));
+		char buf[80], * s = buf;
+		codePointToUTF8(c, [&](char x) { *s++ = x; })
+
+		or this
+
+		std::string buf;
+		codePointToUTF8(c, [&](char x) { buf.push_back(x); })
+
+		... where c is a Unicode code point in a char32_t.
+	*/
+	template<class CharOutput>
+	constexpr void codePointToUTF8(char32_t c, CharOutput f) noexcept
+	{
+		if (c < 0x80)
+			f((char)c);
+		else if (c < 0x800)
+			f((char)(0b11000000 | (c >> 6))),
+			f((char)((c & 0b111111) | 0b10000000));
+		else if (c < 0x10000)
+			f((char)(0b11100000 | (c >> 12))),
+			f((char)(((c >> 6) & 0b111111) | 0b10000000)),
+			f((char)((c & 0b111111) | 0b10000000));
+		else
+			f((char)(0b11110000 | (c >> 18))),
+			f((char)(((c >> 12) & 0b111111) | 0b10000000)),
+			f((char)(((c >> 6) & 0b111111) | 0b10000000)),
+			f((char)((c & 0b111111) | 0b10000000));
+	}
 }
 
 /*
@@ -175,9 +218,9 @@ class basic_utf8iterator
 	// N.B. - as it computes the length of the encoded representation from the data
 	// itself - as well as "trusting" the bit patterns contained therein - it will
 	// ONLY work with well-formed UTF-8 encoded data!
-	_Ty codePointFromUTF8() const {
+	constexpr _Ty codePointFromUTF8() const {
 		const _Ty c = base[0];
-		switch (sizeOfUTF8CodePoint(c)) {
+		switch (detail::sizeOfUTF8CodePoint(c)) {
 		case 1: return c;
 		case 2: return (c & 0b11111) << 6 | (base[1] & 0b111111);
 		case 3: return (c & 0b1111) << 12 | (base[1] & 0b111111) << 6 | (base[2] & 0b111111);
@@ -222,53 +265,53 @@ public:
 	~basic_utf8iterator() {}
 
 	// provide [expert] access to "base" iterator member
-	operator base_type() const { return base; }
+	constexpr operator base_type() const { return base; }
 
 	// define "copy assignment" operator for iterators
-	T& operator=(const T& u) { base = u.base; return *this; }
+	constexpr T& operator=(const T& u) { base = u.base; return *this; }
 
 	// define "dereferencing" operator for iterators
-	value_type operator*() const { return codePointFromUTF8(); }
+	constexpr value_type operator*() const { return codePointFromUTF8(); }
 
 	// define "pre- and post- increment/decrement" operators for iterators
-	T& operator++() { base += sizeOfUTF8CodePoint(*base); return *this; }
-	T operator++(int) { auto u = *this; ++(*this); return u; }
-	T& operator--() { base -= sizeOfPreviousUTF8CodePoint(); return *this; }
-	T operator--(int) { auto u = *this; --(*this); return u; }
+	constexpr T& operator++() { base += detail::sizeOfUTF8CodePoint(*base); return *this; }
+	constexpr T operator++(int) { auto u = *this; ++(*this); return u; }
+	constexpr T& operator--() { base -= sizeOfPreviousUTF8CodePoint(); return *this; }
+	constexpr T operator--(int) { auto u = *this; --(*this); return u; }
 
 	// define "arithmetic" operators for iterators
 	//
 	// N.B. - based on char/byte ptrdiff_t, NOT code point "distance"!
-	T operator+(difference_type d) const { return T(base + d); }
-	T operator-(difference_type d) const { return T(base - d); }
-	T& operator+=(difference_type d) { base += d; return *this; }
-	T& operator-=(difference_type d) { base -= d; return *this; }
+	constexpr T operator+(difference_type d) const { return T(base + d); }
+	constexpr T operator-(difference_type d) const { return T(base - d); }
+	constexpr T& operator+=(difference_type d) { base += d; return *this; }
+	constexpr T& operator-=(difference_type d) { base -= d; return *this; }
 
 	// define "differencing" operators for iterators in same container
-	difference_type operator-(const T& u) const { return base - u.base; }
-	difference_type operator-(const base_type& b) const { return base - b; }
+	constexpr difference_type operator-(const T& u) const { return base - u.base; }
+	constexpr difference_type operator-(const base_type& b) const { return base - b; }
 
 	// define "relational" operators for iterators in same container
-	bool operator==(const T& u) const { return base == u.base; }
-	bool operator==(const base_type& b) const { return base == b; }
-	bool operator!=(const T& u) const { return base != u.base; }
-	bool operator!=(const base_type& b) const { return base != b; }
+	constexpr bool operator==(const T& u) const { return base == u.base; }
+	constexpr bool operator==(const base_type& b) const { return base == b; }
+	constexpr 	bool operator!=(const T& u) const { return base != u.base; }
+	constexpr bool operator!=(const base_type& b) const { return base != b; }
 
-	bool operator>(const T& u) const { return base > u.base; }
-	bool operator>(const base_type& i) const { return base > i; }
-	bool operator<(const T& u) const { return base < u.base; }
-	bool operator<(const base_type& i) const { return base < i; }
+	constexpr bool operator>(const T& u) const { return base > u.base; }
+	constexpr bool operator>(const base_type& i) const { return base > i; }
+	constexpr bool operator<(const T& u) const { return base < u.base; }
+	constexpr bool operator<(const base_type& i) const { return base < i; }
 
-	bool operator>=(const T& u) const { return base >= u.base; }
-	bool operator>=(const base_type& i) const { return base >= i; }
-	bool operator<=(const T& u) const { return base <= u.base; }
-	bool operator<=(const base_type& i) const { return base <= i; }
+	constexpr bool operator>=(const T& u) const { return base >= u.base; }
+	constexpr bool operator>=(const base_type& i) const { return base >= i; }
+	constexpr bool operator<=(const T& u) const { return base <= u.base; }
+	constexpr bool operator<=(const base_type& i) const { return base <= i; }
 };
 
 /*
 	Create the 2 UTF-8 iterators used by the rglob compiler and matcher classes.
 */
-typedef basic_utf8iterator<std::string_view::const_iterator> utf8iterator;
+typedef basic_utf8iterator<string_view::const_iterator> utf8iterator;
 typedef basic_utf8iterator<const char*> utf8iteratorBare;
 
 /*
@@ -339,14 +382,158 @@ typedef basic_utf8iterator<const char*> utf8iteratorBare;
 */
 class compiler
 {
-	enum {
-		AllowedMaxFSM = 4096 - 1		// limit [compiled] finite state machine
-	};
+	string fsm;							// compiled fsm for current glob pattern
 
-	std::string fsm;					// compiled fsm for current glob pattern
+	static constexpr auto base64Digit(int n) noexcept {
+		return							// RFCs 2045/3548/4648/4880 et al
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZ"//  0-25
+			"abcdefghijklmnopqrstuvwxyz"// 26-51
+			"0123456789"				// 52-61
+			"+/"						// 62-63
+			[n & 0x3f];
+	}
+	static constexpr auto hexDigit(int n) noexcept { return "0123456789abcdef"[n & 0xf]; }
+	constexpr void emit(char c) { fsm.push_back(c); }
+	constexpr void emit(string_view v) { fsm.append(v); }
+	constexpr void emitAt(size_t i, char c) { fsm[i] = c; }
+	/*
+		emitPackedBitset inserts a representation of the just-processed "fast path"
+		character class into the current finite state machine definition.
 
-	auto compileClass(std::string_view pattern, std::string_view::const_iterator p);
-	auto compileString(std::string_view pattern, std::string_view::const_iterator p);
+		The actual form of this data is dictated by two considerations:
+
+		1) The stdlib bitset implementation only has convenient "[de-]serialization"
+		options for up-to 64-element sets - the "1 character per bit" form is just a
+		bit too voluminous for our purposes, so we use our own 32 "ASCII/hex" char
+		string for the 128-bit sets used by the "fast path" logic.
+
+		2) Additionally, it was desirable to employ a format that permits fairly
+		efficient queries of individual bits WITHOUT having to "de-serialize" the
+		entire bitset.
+	*/
+	constexpr void emitPackedBitset(const std::bitset<128>& b) {
+		// output the 128-bit bitset in a 4-bits-per-ASCII/hex-character format.
+		for (auto c = 128 - 4; c >= 0; c -= 4)
+			emit(hexDigit(
+				(b.test((size_t)c + 0) ? 1 : 0) |
+				(b.test((size_t)c + 1) ? 2 : 0) |
+				(b.test((size_t)c + 2) ? 4 : 0) |
+				(b.test((size_t)c + 3) ? 8 : 0)));
+	}
+	constexpr void emitLengthAt(size_t i, size_t n) {
+		emitAt(i + 0, base64Digit((n & 0xfc) >> 6)), emitAt(i + 1, base64Digit((n & 0x3f)));
+	}
+	constexpr void emitPadding(int n, char c = '_') { while (n-- > 0) emit(c); }
+	constexpr auto emitted() const noexcept { return fsm.size(); }
+	constexpr void emitUTF8CodePoint(char32_t c) { detail::codePointToUTF8(c, [this](char x) { emit(x); }); }
+	constexpr auto peek(string_view::const_iterator i) const { return *++i; }
+	auto peek(utf8iterator u) const { return *++u; }
+
+	/*
+		compileClass processes a single "character class" string from a glob pattern
+		- after first determining whether the sequence is well-formed - an exception
+		(invalid_argument) will be thrown if it fails this test.
+
+		While evaluating the legality of the character class, two "special cases" of
+		leading character class metachars are checked, and then the presence of non-
+		ASCII is tested... if none are found, then the entire class will be handled
+		by "fast path" logic, and represented as a "bitset" - in which case, class
+		membership (matching) can be tested by a single "lookup" per target char.
+
+		In the general [non-ASCII] case, the match-time evaluation of matches in the
+		character class will be done by evaluating a number of either single-char or
+		char-range expressions serially... if at least one matches the "target"/test
+		char, then the class is matched - otherwise, the class match fails.
+
+		The number of chars/BYTEs consumed is returned.
+	*/
+	auto compileClass(string_view pattern, string_view::const_iterator p) {
+		const auto base = p++;
+		const auto pos = emitted();
+		// check for "inversion" of character class metacharacter
+		auto invert = false;
+		if (*p == '!' || *p == '^')
+			invert = true, ++p;
+		// NOW check for "close" metacharacter as the first class member
+		auto leadingCloseBracket = false;
+		// NOW look for the end of the character class specification...
+		if (*p == ']')
+			leadingCloseBracket = true, ++p;
+		const auto o = p - pattern.cbegin();
+		const auto close = pattern.find_first_of(']', o);
+		// ... and throw if we don't see one
+		if (close == string::npos)
+			throw std::invalid_argument(string("Missing terminating ']' for character class @ ") + string(pattern.substr(base - pattern.cbegin())));
+		if (all_of(p, p + (close - o), [](char c) { return isascii(c); })) {
+			// the character class is ALL ASCII chars, so we can use the "fast path"
+			emit('{');
+			// (neither "invert" flag nor "length" field are needed for "fast path")
+			std::bitset<128> b;
+			// "fast path" (bitset) invert is easy
+			if (invert)
+				b.set();
+			if (leadingCloseBracket)
+				b.flip(']');
+			// process all class members by "flipping" corresponding bits...
+			while (*p != ']')
+				if (const auto c1 = *p++, c2 = *p; c2 == '-' && peek(p) != ']') {
+					const auto c3 = *++p;
+					for (auto c = c1; c <= c3; c++)
+						b.flip(c);
+					++p;
+				} else
+					b.flip(c1);
+			// ... finish up by copying the [packed] bitset to finite state machine
+			emitPackedBitset(b), ++p;
+			return p - base;
+		} else {
+			// "general case" character class, output single and range match exprs
+			emit('[');
+			emit(hexDigit(invert ? 1 : 0));
+			// initialize and "remember" location of length (to be filled in later)
+			const auto lenPos = emitted();
+			emitPadding(LengthSize);
+			if (leadingCloseBracket)
+				emit('+'), emit(']');
+			// NOW switch to full UTF-8 (Unicode) processing...
+			utf8iterator u = p;
+			// ... and process all class members by outputting match-time operators
+			while (*u != ']')
+				if (const auto c1 = *u++, c2 = *u; c2 == '-' && peek(u) != ']') {
+					// (generate "char range" matching operator)
+					const auto c3 = *++u;
+					emit('-'), emitUTF8CodePoint(c1), emitUTF8CodePoint(c3), ++u;
+				} else
+					// (generate "single char" matching operator)
+					emit('+'), emitUTF8CodePoint(c1);
+			// finish up by generating the "NO match" operator...
+			emit(']'), ++u;
+			// ... and output the length of the character class "interpreter" logic
+			emitLengthAt(lenPos, emitted() - pos - (1 + 1 + LengthSize + 1));
+			return u - base;
+		}
+	}
+	/*
+		compileString processes a single "exact match" string from a glob pattern...
+		this will extend until either the next glob metacharacter or the pattern end
+		- there is no "invalid" case.
+
+		The number of chars/BYTEs consumed is returned.
+	*/
+	auto compileString(string_view pattern, string_view::const_iterator p) {
+		emit('=');
+		// initialize and "remember" location of length (to be filled in later)
+		const auto lenPos = emitted();
+		emitPadding(LengthSize);
+		// determine length...
+		const auto o = p - pattern.cbegin();
+		const auto i = pattern.find_first_of("?*[", o);
+		const auto n = i != string::npos ? i - o : pattern.size() - o;
+		// ... and copy "exact match" string to finite state machine
+		emit(pattern.substr(p - pattern.cbegin(), n));
+		emitLengthAt(lenPos, n);
+		return n;
+	}
 
 public:
 	compiler() {
@@ -358,7 +545,8 @@ public:
 	/*
 		compile accepts a pattern following the rules detailed in the class
 		documentation, and "compiles" it to a representation enabling faster
-		subsequent matching; possible exceptions include
+		subsequent matching: a "finite state machine" able to recognize text
+		matching the supplied [UTF-8] pattern.
 
 		invalid_argument if the pattern string is NOT valid UTF-8
 
@@ -369,38 +557,45 @@ public:
 		In all cases, an explanatory text message is included, with position
 		information if applicable.
 	*/
-	void compile(std::string_view pattern);
+	void compile(string_view pattern) {
+		// make SURE pattern is *structurally* valid UTF8
+		if (!detail::validateUTF8String(pattern))
+			throw std::invalid_argument("Pattern string is not valid UTF-8.");
+		fsm.clear();
+		// prep for filling in compiled length of pattern later
+		emit('#'), emitPadding(2);
+		ptrdiff_t incr = 1;
+		// iterate over, compile, and consume pattern elements
+		for (auto pi = pattern.cbegin(); pi != pattern.cend(); pi += incr) {
+			switch (*pi) {
+			case '?':
+				emit(*pi), incr = 1;
+				break;
+			case '*':
+				emit(*pi), incr = 1;
+				break;
+			case '[':
+				incr = compileClass(pattern, pi);
+				break;
+			default:
+				incr = compileString(pattern, pi);
+			}
+			if (emitted() > AllowedMaxFSM)
+				throw std::length_error(string("Exceeded allowed compiled pattern size @ ") + string(pattern.substr(pi - pattern.cbegin())));
+		}
+		// NOW fill in length of compiled pattern... IFF there is any actual pattern
+		if (const auto n = emitted(); n > 1 + LengthSize)
+			emitLengthAt(1, n - (1 + LengthSize));
+		else
+			fsm.clear();
+	}
 
 	/*
 		machine returns the compiled form of the [valid] glob pattern supplied
 		to compile... note that while this is "human-readable", the matcher
 		class's pretty_print does a better job of displaying this information.
 	*/
-	const std::string_view machine() const { return fsm; }
-
-private:
-	static constexpr auto base64Digit(int n) {
-		return								// RFCs 2045/3548/4648/4880 et al
-			"ABCDEFGHIJKLMNOPQRSTUVWXYZ"	//  0-25
-			"abcdefghijklmnopqrstuvwxyz"	// 26-51
-			"0123456789"					// 52-61
-			"+/"							// 62-63
-			[n & 0x3f];
-	}
-	static constexpr auto hexDigit(int n) { return "0123456789abcdef"[n & 0xf]; }
-	void emit(char c) { fsm.push_back(c); }
-	void emit(std::string_view v) { fsm.append(v); }
-	void emitAt(size_t i, char c) { fsm[i] = c; }
-	void emitPackedBitset(const std::bitset<128>& b);
-	void emitLengthAt(size_t i, size_t n)
-	{
-		emitAt(i + 0, base64Digit((n & 0xfc) >> 6)), emitAt(i + 1, base64Digit((n & 0x3f)));
-	}
-	void emitPadding(int n, char c = '_') { while (n-- > 0) emit(c); }
-	auto emitted() const { return fsm.size(); }
-	void emitUTF8CodePoint(char32_t c) { codePointToUTF8(c, [this](char x) { emit(x); }); }
-	constexpr auto peek(std::string_view::const_iterator i) const { return *++i; }
-	auto peek(utf8iterator u) const { return *++u; }
+	string_view machine() const noexcept { return fsm; }
 };
 
 /*
@@ -411,44 +606,9 @@ private:
 */
 class matcher
 {
-	std::string_view fsm;
+	string_view fsm;					// compiled fsm for current glob pattern
 
-public:
-	/*
-		Using the rglob::matcher constructor is considered an "expert" level of
-		use of the rglob system... it is far more likely that you will be using
-		the rglob::glob class - it's easier and really made for most situations.
-
-		That said, if you DO choose to access rglob functionality at the lower
-		level of using the compiler and matcher classes directly, note that the
-		ONLY supported values for the matcher constructor(s) are those returned
-		from the compiler::machine function... which by definition only returns
-		well-formed finite state machines, composed of valid sequences.
-
-		This last bit is really just a disclaimer saying "we trust our own data
-		and may therefore be a bit relaxed in our internal error-checking".
-	*/
-	matcher() = delete;
-	matcher(std::string_view m) : fsm(m) {}
-
-	/*
-		match accepts a "target" string and attempts to match it to the pattern
-		that was previously processed by compiler::compile, reflecting the match
-		success/failure as its return value; possible exceptions include
-
-		invalid_argument if the target string is NOT valid UTF-8
-	*/
-	bool match(std::string_view target) const;
-
-	/*
-		pretty_print outputs a formatted representation of the current finite
-		state machine produced by compiler::compile to the supplied ostream
-		(with optional layout "prefix" per line).
-	*/
-	void pretty_print(std::ostream& s, std::string_view pre = "") const;
-
-private:
-	static constexpr int base64Value(char c) {
+	static constexpr int base64Value(char c) noexcept {
 		return
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -471,7 +631,7 @@ private:
 			"\x31\x32\x33\x00\x00\x00\x00\x00"
 			[c & 0x7f];
 	}
-	static constexpr int hexValue(char c) {
+	static constexpr int hexValue(char c) noexcept {
 		return
 			"\x00\x00\x00\x00\x00\x00\x00\x00"	// 00-0f <illegal>
 			"\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -497,12 +657,201 @@ private:
 	auto opAt(utf8iteratorBare i) const { return *(utf8iteratorBare::base_type)i; }
 	auto decodeLengthAt(utf8iteratorBare i) const { return base64Value(opAt(i + 0)) * 64 + base64Value(opAt(i + 1)); }
 	auto decodeModifierAt(utf8iteratorBare i) const { return hexValue(opAt(i)); }
-	constexpr int packedBitsetMask(int b) const { return "\x8\4\2\1"[(127 - b) & 0b11]; }
+	constexpr int packedBitsetMask(int b) const noexcept { return "\x8\4\2\1"[(127 - b) & 0b11]; }
 	auto packedBitsetNibbleAt(utf8iteratorBare i, int b) const { return hexValue(((utf8iteratorBare::base_type)i)[(127 - b) >> 2]); }
 	auto testPackedBitsetAt(utf8iteratorBare i, int b) const { return (packedBitsetNibbleAt(i, b) & packedBitsetMask(b)) != 0; }
 
-	utf8iteratorBare cbegin() const { return fsm.data(); }
-	utf8iteratorBare cend() const { return fsm.data() + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm.data() + 1) : fsm.size()); }
+	utf8iteratorBare cbegin() const noexcept { return fsm.data(); }
+	// (N.B. - fsm.size() MAY not be useful, but fsm.data() WILL point to text)
+	utf8iteratorBare cend() const { return fsm.data() + (fsm[0] == '#' ? 1 + LengthSize + decodeLengthAt(fsm.data() + 1) : std::strlen(fsm.data())); }
+
+public:
+	/*
+		Using the rglob::matcher constructor is considered an "expert" level of
+		use of the rglob system... it is far more likely that you will be using
+		the rglob::glob class - it's easier and really made for most situations.
+
+		That said, if you DO choose to access rglob functionality at the lower
+		level of using the compiler and matcher classes directly, note that the
+		ONLY supported values for the matcher constructor(s) are those returned
+		from the compiler::machine function... which by definition only returns
+		well-formed finite state machines, composed of valid sequences.
+
+		This last bit is really just a disclaimer saying "we trust our own data
+		and may therefore be a bit relaxed in our internal error-checking".
+	*/
+	matcher() = delete;
+	matcher(string_view m) : fsm(m) {}
+
+	/*
+		match accepts a [UTF-8] "target" string and attempts to match it to the
+		pattern that was previously processed by compiler::compile, reflecting
+		the match success/failure as its return value.
+
+		invalid_argument if the target string is NOT valid UTF-8
+	*/
+	bool match(string_view target) const {
+		// make SURE target is *structurally* valid UTF8
+		if (!detail::validateUTF8String(target))
+			throw std::invalid_argument("Target string is not valid UTF-8.");
+		auto anchored = true, invert = false;
+		utf8iteratorBare next = nullptr;
+		utf8iterator ti = target.cbegin();
+		// iterate over the previously compiled pattern representation, consuming
+		// recognized (matched) elements of the target text
+		for (auto first = cbegin(), mi = first, last = cend(); mi != last;)
+			switch (*mi++) {
+			case '#':
+				// "no-op" from the perspective of matching
+				mi += LengthSize;
+				break;
+			case '?':
+				// accept ("match") single target code point
+				anchored = true, ++ti;
+				break;
+			case '*':
+				// set "free" or "floating" match meta state; this MAY involve
+				// "skipping over" zero or more target code points
+				anchored = false;
+				break;
+			case '[':
+				// prep for full "interpreted" UTF-8 character class recognition
+				invert = decodeModifierAt(mi) != 0;
+				next = mi + 1 + LengthSize + decodeLengthAt(mi + 1) + 1, mi += 1 + LengthSize;
+				break;
+			case '{':
+				// perform "fast path" (all-ASCII) character class match
+				if (anchored) {
+					if (const auto tx = *ti; !(isascii(tx) && testPackedBitsetAt(mi, tx)))
+						return false;
+					// (consume target code point(s) and skip to after the ']')
+					++ti, mi += 32;
+				} else {
+					auto i = find_if(ti, utf8iterator(target.cend()), [=](char32_t tx) { return isascii(tx) && testPackedBitsetAt(mi, tx); });
+					if (i == target.cend())
+						return false;
+					// (consume target code point(s) and skip to after the ']')
+					ti = ++i, anchored = true, mi += 32;
+				}
+				break;
+			case '+': {
+				// attempt to match single "interpreted" character class code point
+				const auto p = *mi++;
+				if (anchored) {
+					if (const auto tx = *ti; (p == tx) == !invert)
+						// (consume target code point(s) and skip to after the ']')
+						++ti, mi = next;
+				} else {
+					auto i = find_if(ti, utf8iterator(target.cend()), [=](char32_t tx) { return (p == tx) == !invert; });
+					if (i != target.cend())
+						// (consume target code point(s) and skip to after the ']')
+						ti = ++i, anchored = true, mi = next;
+				}
+				break;
+			}
+			case '-': {
+				// attempt to match "interpreted" character class "range" code point
+				const auto p1 = *mi++, p2 = *mi++;
+				if (anchored) {
+					const auto tx = *ti;
+					if ((p1 <= tx && tx <= p2) == !invert)
+						// (consume target code point(s) and skip to after the ']')
+						++ti, mi = next;
+				} else {
+					auto i = find_if(ti, utf8iterator(target.cend()), [=](char32_t tx) { return (p1 <= tx && tx <= p2) == !invert; });
+					if (i != target.cend())
+						// (consume target code point(s) and skip to after the ']')
+						ti = ++i, anchored = true, mi = next;
+				}
+				break;
+			}
+			case ']':
+				// end of "interpreted" UTF-8 character class... if we get here, it
+				// means we did NOT match ANY target code point - i.e., "failure"
+				return false;
+			case '=': {
+				// attempt an exact sequence of UTF-8 code points match
+				const auto n = decodeLengthAt(mi);
+				const auto o = ti - target.cbegin();
+				const auto i = target.find(mi + LengthSize, o, n);
+				// (below means "not found" OR "found, but not where expected")
+				if (i == string::npos || (anchored && i != o))
+					return false;
+				ti = anchored ? ti + n : utf8iterator(target.cbegin() + i + n), anchored = true, mi += LengthSize + n;
+				break;
+			}
+			}
+		// return whether we [successfully] consumed ALL target text OR the pattern
+		// ended in a "free" or "floating" match state (e.g.,  "ab*" matches "abZ")
+		return ti == target.cend() || !anchored;
+	}
+
+	/*
+		pretty_print outputs a formatted representation of the current finite
+		state machine produced by compiler::compile to the supplied ostream
+		(with optional layout "prefix" per line).
+	*/
+	void pretty_print(std::ostream& s, string_view pre = "") const {
+		// (local fn to compute width for Unicode representation)
+		auto w = [](char32_t c) { return c < 0x010000 ? 4 : c < 0x100000 ? 5 : 6; };
+		// (local fn to show Unicode char as ASCII if we can, else use "U+..." form)
+		auto a = [&](char32_t c) -> std::ostream& {
+			return
+				isascii(c) ?
+				s << (char)c :
+				s << "U+" << std::hex << std::uppercase << std::setfill('0') << std::setw(w(c))
+				<< (int)c
+				<< std::dec << std::setfill(' ');
+		};
+		// iterate over each element of finite state machine...
+		for (auto first = cbegin(), mi = first, last = cend(); mi != last;) {
+			const auto op = *mi++;
+			s << pre << "[" << std::setw(4) << (mi - first - 1) << "] op: " << (char)op;
+			switch (op) {
+			case '#':
+				// display length of compiled pattern
+				s << " len: " << decodeLengthAt(mi);
+				mi += LengthSize;
+				break;
+			case '[':
+				// display control metadata from "interpreted" character class
+				s << " mod: " << (char)*mi << " len: " << decodeLengthAt(mi + 1);
+				mi += 1 + LengthSize;
+				break;
+			case '{':
+				// display bitset from "fast path" character class
+				s << " val: ";
+				std::copy((utf8iteratorBare::base_type)mi, (utf8iteratorBare::base_type)mi + 32, std::ostreambuf_iterator<char>(s));
+				mi += 32;
+				break;
+			case '+':
+				// display SINGLE match case from "interpreted" character class
+				s << " val: ", a(*mi++);
+				break;
+			case '-':
+				// display RANGE match case from "interpreted" character class
+				s << " val: ", a(*mi++) << ' ', a(*mi++);
+				break;
+			case '=': {
+				// display "exact match" string from glob pattern
+				const auto n = decodeLengthAt(mi);
+				s << " len: " << n << " val:";
+				// "leading space" rules: NEVER show ASCII sequences with embedded
+				// spaces, ALWAYS show [multi-byte] Unicode code points as " U+..."
+				// for each, and ALWAYS insert a space when switching between them.
+				enum LeadingSpace { None, Ascii, Unicode } state = None;
+				std::for_each(mi + LengthSize, mi + LengthSize + n, [&](char32_t c) {
+					if (const auto newState = isascii(c) ? Ascii : Unicode; newState != state || state == Unicode)
+						s << ' ', state = newState;
+					a(c);
+				});
+				mi += LengthSize + n;
+				break;
+			}
+			}
+			s << std::endl;
+		}
+	}
 };
 
 /*
